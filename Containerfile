@@ -1,5 +1,4 @@
-# Dev-only build for local/Kind use. The Konflux-managed production build
-# (Dockerfile.konflux) is out of scope until phase 4.
+# Dev-only build for local/Kind use. Production/Konflux builds use Dockerfile.konflux.
 
 # Build the manager binary
 FROM golang:1.26.5 AS builder
