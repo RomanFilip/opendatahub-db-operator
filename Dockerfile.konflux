@@ -1,4 +1,5 @@
-# Konflux / RHOAI production build for rhai-db-operator.
+# Konflux / RHOAI production build for red-hat-data-services/rhai-db-operator.
+# Image labels use downstream rhai-db branding; chart/RBAC may still use odh-db-operator-*.
 # Local/Kind development continues to use Containerfile.
 
 ARG SOURCE_CODE=.
@@ -35,13 +36,13 @@ FROM registry.redhat.io/ubi9/ubi-minimal-pqc@sha256:db10c80537d786068c7c911d7ef6
 
 ARG USER=65532
 
-LABEL com.redhat.component="odh-db-operator-container" \
-      name="managed-open-data-hub/odh-db-operator-rhel9" \
-      summary="Open Data Hub database infrastructure operator" \
-      description="Kubernetes operator providing the shared database infrastructure service for OpenShift AI / Open Data Hub" \
+LABEL com.redhat.component="rhai-db-container" \
+      name="managed-open-data-hub/rhai-db-rhel9" \
+      summary="Red Hat OpenShift AI shared database infrastructure operator" \
+      description="Kubernetes operator providing the shared database infrastructure service for Red Hat OpenShift AI" \
       maintainer="['managed-open-data-hub@redhat.com']" \
-      io.k8s.display-name="odh-db-operator" \
-      io.k8s.description="Kubernetes operator providing the shared database infrastructure service for OpenShift AI / Open Data Hub" \
+      io.k8s.display-name="rhai-db" \
+      io.k8s.description="Kubernetes operator providing the shared database infrastructure service for Red Hat OpenShift AI" \
       io.openshift.expose-services="" \
       com.redhat.license_terms="https://www.redhat.com/licenses/Red_Hat_Standard_EULA_20191108.pdf"
 
