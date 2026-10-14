@@ -1,8 +1,7 @@
-# Dev-only build for local/Kind use. The Konflux-managed production build
-# (Dockerfile.konflux) is out of scope until phase 4.
+# ODH Konflux CI and local/Kind builds use this Containerfile. RHOAI uses Dockerfile.konflux.
 
 # Build the manager binary
-FROM golang:1.26.5 AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:1.26@sha256:f9e171ed4a2ecfd284b6d977d60f6a0ed33eac8628ad806a80cdf3521cb8bede AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
