@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":gitSignOff",
+    "github>red-hat-data-services/konflux-central//renovate/default-renovate.json5"
+  ],
+  "onboarding": false,
+  "requireConfig": "optional",
+  "inheritConfig": true,
+  "platformCommit": "enabled",
+  "autodiscover": false,
+  "branchPrefix": "konflux/mintmaker/",
+  "additionalBranchPrefix": "{{baseBranch}}/",
+  "forkProcessing": "enabled",
+  "enabledManagers": ["dockerfile", "github-actions", "gomod"],
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "description": "Keep the Go toolset on Go 1.x tags",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["registry.access.redhat.com/ubi9/go-toolset"],
+      "allowedVersions": "/^1\\./"
+    },
+    {
+      "description": "Require approval for Go module major updates",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}
