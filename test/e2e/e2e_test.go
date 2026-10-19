@@ -48,6 +48,8 @@ const (
 	managerDeployment = "odh-db-operator-operator"
 	managerBinding    = "odh-db-operator-manager-rolebinding"
 	leaderBinding     = "odh-db-operator-leader-election-rolebinding"
+	e2eOwnerLabel     = "shiftleft.opendatahub.io/owner"
+	e2eOwnerValue     = "rhai-db-operator"
 )
 
 func TestMain(m *testing.M) {
@@ -56,7 +58,7 @@ func TestMain(m *testing.M) {
 	SetDefaultEventuallyPollingInterval(gomegaCfg.EventuallyPollingInterval)
 	SetDefaultConsistentlyPollingInterval(gomegaCfg.ConsistentlyPollingInterval)
 
-	m.Run()
+	os.Exit(m.Run())
 }
 
 // TestHelmInstalledManagerReconcilesDatabaseService proves the chart-installed
@@ -134,12 +136,33 @@ func TestHelmInstalledManagerReconcilesDatabaseService(t *testing.T) {
 	if expectedImage := os.Getenv("ODH_E2E_OPERATOR_IMAGE"); expectedImage != "" {
 		g.Expect(managerImage).To(Equal(expectedImage), "chart Deployment is not using the freshly built test image")
 	}
+
+	expectedPlatformType := envOrDefault("ODH_E2E_PLATFORM_TYPE", moduleconfig.DefaultPlatformType)
+	configuredPlatformVersion := os.Getenv("ODH_E2E_PLATFORM_VERSION")
+	expectedPlatformReleaseVersion := configuredPlatformVersion
+	if expectedPlatformReleaseVersion == "" {
+		expectedPlatformReleaseVersion = "0.0.0"
+	}
+
+	operatorConfig := &corev1.ConfigMap{}
+	g.Expect(kubeClient.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      moduleconfig.OperatorConfigMapName,
+	}, operatorConfig)).To(Succeed(), "chart operator ConfigMap does not exist")
+	g.Expect(operatorConfig.Data["platformType"]).To(Equal(expectedPlatformType))
+	g.Expect(operatorConfig.Data["platformVersion"]).To(Equal(configuredPlatformVersion))
+
 	t.Logf("Helm release %q Deployment %s/%s is Ready; manager image=%q, ServiceAccount=%q; "+
 		"chart manager and leader-election bindings reference that ServiceAccount",
 		release, namespace, deployment.Name, managerImage, serviceAccountName)
 
 	instance := &servicesv1alpha1.DatabaseService{
-		ObjectMeta: metav1.ObjectMeta{Name: servicesv1alpha1.DatabaseServiceInstanceName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: servicesv1alpha1.DatabaseServiceInstanceName,
+			Labels: map[string]string{
+				e2eOwnerLabel: e2eOwnerValue,
+			},
+		},
 	}
 	g.Expect(kubeClient.Create(ctx, instance)).To(Succeed(),
 		"creating the singleton DatabaseService; the e2e setup should remove leftovers before each run")
@@ -171,9 +194,15 @@ func TestHelmInstalledManagerReconcilesDatabaseService(t *testing.T) {
 
 		readyCondition := conditions.FindStatusCondition(got, string(fwapi.ConditionTypeReady))
 		g.Expect(readyCondition).NotTo(BeNil(), "no Ready condition on status.conditions")
-		g.Expect(readyCondition.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(got.Status.ComponentReleaseStatus.GetRelease(moduleconfig.ReleasePlatform)).NotTo(BeNil(),
-			"no platform release in status.releases")
+		if readyCondition != nil {
+			g.Expect(readyCondition.Status).To(Equal(metav1.ConditionTrue))
+		}
+		platformRelease := got.Status.ComponentReleaseStatus.GetRelease(moduleconfig.ReleasePlatform)
+		g.Expect(platformRelease).NotTo(BeNil(), "no platform release in status.releases")
+		if platformRelease != nil {
+			g.Expect(platformRelease.Version).To(Equal(expectedPlatformReleaseVersion),
+				"platform release version does not match the configured chart version")
+		}
 
 		reconciled = got.DeepCopy()
 	}).Should(Succeed(), "waiting for the chart-deployed manager to reconcile DatabaseService to Ready")

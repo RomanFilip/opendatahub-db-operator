@@ -19,3 +19,10 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include the chart and e2e test support needed by the dedicated test-runner image.
+!config/
+!config/chart/
+!config/chart/**
+!test/
+!test/**

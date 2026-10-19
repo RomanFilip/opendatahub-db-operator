@@ -79,6 +79,13 @@ lint-config: ## Verify golangci-lint linter configuration.
 test: ## Run unit tests (everything outside test/integration, test/envtest, and test/e2e).
 	go test $$(go list ./... | grep -v '/test/integration' | grep -v '/test/envtest' | grep -v '/test/e2e') -coverprofile cover.out
 
+.PHONY: test-e2e-runner
+test-e2e-runner: ## Run cluster-free E2E runner checks and compile the real smoke suite.
+	go test ./test/e2e/cmd/cleanup -count=1
+	sh test/e2e/runner_test.sh
+	@tmpdir="$$(mktemp -d)"; trap 'rm -rf "$$tmpdir"' EXIT; \
+		go test -c -o "$$tmpdir/e2e.test" ./test/e2e
+
 .PHONY: test-envtest
 test-envtest: manifests ## Run the envtest-based reconciler suite (no external cluster required).
 	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
@@ -192,10 +199,20 @@ container-build: ## Build container image with the manager (podman).
 container-push: ## Push container image with the manager.
 	$(CONTAINER_TOOL) push "$(IMG)"
 
+.PHONY: container-build-e2e
+container-build-e2e: ## Build the dedicated container image with the e2e test runner.
+	$(CONTAINER_TOOL) build -f "$(E2E_TEST_DOCKERFILE)" -t "$(E2E_TEST_IMG)" .
+
+.PHONY: container-push-e2e
+container-push-e2e: ## Push the dedicated e2e test-runner image.
+	$(CONTAINER_TOOL) push "$(E2E_TEST_IMG)"
+
 KIND_CLUSTER ?= db-operator-dev
 TEST_INTEGRATION_CONTEXT ?= kind-$(KIND_CLUSTER)
 E2E_NAMESPACE ?= opendatahub-db-operator-e2e
 E2E_RELEASE   ?= opendatahub-db-operator-e2e
+E2E_TEST_IMG ?= localhost/opendatahub-db-operator-e2e:dev
+E2E_TEST_DOCKERFILE ?= test/e2e/Dockerfile
 
 .PHONY: container-load-kind
 container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image` doesn't work with the podman provider.

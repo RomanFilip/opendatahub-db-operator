@@ -147,6 +147,9 @@ jobs:
       - name: Run unit tests
         run: make test
 
+      - name: Verify E2E runner sources
+        run: make test-e2e-runner
+
   envtest:
     name: Envtest Reconciler Suite
     runs-on: ubuntu-24.04
