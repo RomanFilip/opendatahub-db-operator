@@ -200,11 +200,3 @@ func hasServiceAccountSubject(subjects []rbacv1.Subject, namespace, name string)
 
 	return false
 }
-
-func envOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-
-	return fallback
-}

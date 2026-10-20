@@ -9,12 +9,19 @@
 !cmd/
 !api/
 !assets/
+!config/
 !internal/
 !pkg/
+!test/
 
-# Re-include Go source files (but not *_test.go)
+# Re-include all Go source files
 !**/*.go
-**/*_test.go
+# Exclude *_test.go files from directories other than test/
+cmd/*_test.go
+api/*_test.go
+internal/*_test.go
+pkg/*_test.go
+assets/*_test.go
 
 # Re-include Go module files
 !go.mod

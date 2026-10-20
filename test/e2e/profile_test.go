@@ -28,11 +28,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const (
-	certManagerProfilePresent = "present"
-	certManagerProfileAbsent  = "absent"
-)
-
 func TestCertManagerProfile(t *testing.T) {
 	profile := os.Getenv("ODH_E2E_CERT_MANAGER_PROFILE")
 	if profile == "" {

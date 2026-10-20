@@ -75,9 +75,14 @@ lint-fix: ## Run golangci-lint linter and perform fixes.
 lint-config: ## Verify golangci-lint linter configuration.
 	$(GOLANGCI_LINT) config verify
 
+UNIT_TEST_PACKAGES ?= ./api/... ./assets/... ./cmd/... ./internal/... ./pkg/... ./test/support/...
+
 .PHONY: test
-test: ## Run unit tests (everything outside test/integration, test/envtest, and test/e2e).
-	go test $$(go list ./... | grep -v '/test/integration' | grep -v '/test/envtest' | grep -v '/test/e2e') -coverprofile cover.out
+test: test-unit ## Run unit tests.
+
+.PHONY: test-unit
+test-unit: ## Run unit tests in the selected packages without a cluster.
+	go test $(UNIT_TEST_PACKAGES) -coverprofile cover.out
 
 .PHONY: test-envtest
 test-envtest: manifests ## Run the envtest-based reconciler suite (no external cluster required).
@@ -235,6 +240,24 @@ container-build: ## Build container image with the manager (podman).
 .PHONY: container-push
 container-push: ## Push container image with the manager.
 	$(CONTAINER_TOOL) push "$(IMG)"
+
+E2E_IMG ?= quay.io/rhoai/odh-db-operator-e2e-rhel9:dev
+E2E_CONTEXT ?=
+E2E_ARTIFACTS ?= $(CURDIR)/bin/e2e-artifacts
+E2E_TEST_PATTERN ?= ^TestHelmInstalledManagerReconcilesDatabaseService$$
+
+.PHONY: e2e-image-build
+e2e-image-build: ## Build the e2e test image (context: repo root).
+	"$(CONTAINER_TOOL)" build -f test/e2e/Containerfile -t "$(E2E_IMG)" .
+
+.PHONY: e2e-image-run
+e2e-image-run: ## Run the e2e image lifecycle on E2E_CONTEXT and save reports locally.
+	@CONTAINER_TOOL="$(CONTAINER_TOOL)" KUBECTL="$(KUBECTL)" \
+		E2E_IMG="$(E2E_IMG)" E2E_CONTEXT="$(E2E_CONTEXT)" \
+		E2E_ARTIFACTS="$(E2E_ARTIFACTS)" E2E_TEST_PATTERN='$(E2E_TEST_PATTERN)' \
+		ODH_E2E_OPERATOR_IMAGE="$(IMG)" ODH_E2E_NAMESPACE="$(E2E_NAMESPACE)" \
+		ODH_E2E_RELEASE="$(E2E_RELEASE)" \
+		bash test/e2e/scripts/run-image.sh
 
 KIND_CLUSTER ?= db-operator-dev
 TEST_INTEGRATION_CONTEXT ?= kind-$(KIND_CLUSTER)
