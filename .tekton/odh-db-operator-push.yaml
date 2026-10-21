@@ -26,7 +26,11 @@ spec:
   - name: output-image
     value: quay.io/opendatahub/odh-db-operator:odh-stable
   - name: dockerfile
-    value: Containerfile
+    value: Dockerfile.konflux
+  - name: build-platforms
+    value:
+    - linux/amd64
+    - linux/arm64
   - name: path-context
     value: .
   pipelineRef:
