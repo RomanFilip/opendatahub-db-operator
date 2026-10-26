@@ -248,7 +248,7 @@ E2E_TEST_PATTERN ?= ^TestHelmInstalledManagerReconcilesDatabaseService$$
 
 .PHONY: e2e-image-build
 e2e-image-build: ## Build the e2e test image (context: repo root).
-	"$(CONTAINER_TOOL)" build -f test/e2e/Containerfile -t "$(E2E_IMG)" .
+	"$(CONTAINER_TOOL)" build -f test/e2e/Dockerfile -t "$(E2E_IMG)" .
 
 .PHONY: e2e-image-run
 e2e-image-run: ## Run the e2e image lifecycle on E2E_CONTEXT and save reports locally.
