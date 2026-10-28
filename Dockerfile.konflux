@@ -24,6 +24,7 @@ RUN go mod download
 # Copy only the source needed to build the manager binary.
 COPY cmd/ cmd/
 COPY api/ api/
+COPY assets/ assets/
 COPY internal/ internal/
 COPY pkg/ pkg/
 
