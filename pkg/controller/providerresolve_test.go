@@ -30,13 +30,87 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	servicesApi "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 )
 
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = infraApi.AddToScheme(s)
+	_ = servicesApi.AddToScheme(s)
 	return s
+}
+
+func TestResolveForCurrentOrDefault(t *testing.T) {
+	g := NewWithT(t)
+	service := &servicesApi.DatabaseService{
+		ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName},
+		Status: servicesApi.DatabaseServiceStatus{
+			DefaultProviderName: "installed-db",
+		},
+	}
+	installed := makeInternalProvider("installed-db", service.Name)
+	bound := makeInternalProvider("previous-db", service.Name)
+	cli := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(service, &installed, &bound).Build()
+
+	got, err := controller.ResolveForCurrentOrDefault(context.Background(), cli, infraApi.ProviderRef{}, "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(got.Name).To(Equal("installed-db"))
+	got, err = controller.ResolveForCurrentOrDefault(context.Background(), cli, infraApi.ProviderRef{}, "previous-db")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(got.Name).To(Equal("previous-db"))
+}
+
+func TestResolveForCurrentOrDefaultRejectsUnmanagedProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		owner           string
+		providerType    infraApi.ProviderType
+		currentProvider string
+	}{
+		{name: "foreign Internal provider", providerType: infraApi.ProviderTypeInternal},
+		{name: "owned External provider", owner: servicesApi.DatabaseServiceInstanceName,
+			providerType: infraApi.ProviderTypeExternal},
+		{name: "already bound to foreign provider", providerType: infraApi.ProviderTypeInternal,
+			currentProvider: "installed-db"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			service := &servicesApi.DatabaseService{
+				ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName},
+				Status:     servicesApi.DatabaseServiceStatus{DefaultProviderName: "installed-db"},
+			}
+			provider := makeInternalProvider("installed-db", tc.owner)
+			provider.Spec.Type = tc.providerType
+			cli := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(service, &provider).Build()
+			_, err := controller.ResolveForCurrentOrDefault(
+				context.Background(), cli, infraApi.ProviderRef{}, tc.currentProvider)
+			var notFound controller.ErrNotFound
+			g.Expect(errors.As(err, &notFound)).To(BeTrue(),
+				"unmanaged provider must not satisfy an implicit reference: %v", err)
+		})
+	}
+}
+
+func TestResolveForCurrentOrDefaultAllowsExplicitForeignProvider(t *testing.T) {
+	g := NewWithT(t)
+	provider := makeProvider("external", nil, nil)
+	cli := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(&provider).Build()
+	got, err := controller.ResolveForCurrentOrDefault(
+		context.Background(), cli, infraApi.ProviderRef{Name: provider.Name}, "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(got.Name).To(Equal(provider.Name))
+}
+
+func makeInternalProvider(name, owner string) infraApi.DatabaseProvider {
+	provider := infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal},
+	}
+	if owner != "" {
+		provider.Annotations = map[string]string{controller.AnnotationDefaultProviderOwner: owner}
+	}
+	return provider
 }
 
 func makeProvider(name string, labels map[string]string, annotations map[string]string) infraApi.DatabaseProvider {

@@ -14,7 +14,7 @@ namespaced database claims.
 - An OpenShift cluster with the OpenShift AI Operator release that includes the `databaseservice` module.
 - An OpenShift version supported by that OpenShift AI release; use its version-specific installation guide.
 - Cluster administrator access to enable the module or install the chart and its CRDs.
-- A working storage class when using an Internal PostgreSQL provider.
+- A working storage class for the default Internal PostgreSQL provider.
 - Helm when installing the standalone chart.
 - cert-manager installed on the cluster when installing the standalone chart.
 
@@ -72,9 +72,16 @@ updated schema separately with `kubectl apply -f config/chart/crds/` alongside `
 
 ## Configure a provider
 
-Create a `DatabaseProvider` before requesting a database. This example provisions an Internal
-PostgreSQL instance using the cluster's default storage class; set `storageClassName` when a
-different class is required:
+`DatabaseService` creates an Internal `DatabaseProvider` named `rhai-db` and its single-replica
+PostgreSQL workload in the operator namespace. The workload uses the cluster's default storage
+class and requests 20Gi. Set `config.default-provider-name` during Helm installation to choose
+another name; changing it after the service has initialized is rejected. Check
+`oc get databaseproviders` and the service's `DefaultProviderReady` condition while the
+workload starts.
+
+Create additional `DatabaseProvider` resources when a claim needs a different backend. This
+example provisions an Internal PostgreSQL instance using the cluster's default storage class;
+set `storageClassName` when a different class is required:
 
 ```yaml
 apiVersion: infrastructure.opendatahub.io/v1alpha1
@@ -105,7 +112,7 @@ for the supported fields.
 
 ## Request a database
 
-Create a namespaced `DatabaseClaim` for a database on the selected provider. The provider must
+Create a namespaced `DatabaseClaim` for a database on the default provider. The provider must
 already contain the requested database or permit the claim to create it:
 
 ```yaml
@@ -115,8 +122,6 @@ metadata:
   name: app-db
   namespace: my-app
 spec:
-  provider:
-    name: app-postgres
   database: app
   access: ReadWrite
 ```
@@ -132,6 +137,12 @@ oc get secret app-db -n my-app
 
 The Secret contains discrete PostgreSQL connection fields. See the [credential contract](../ARCHITECTURE.md#credential-contract)
 for field names and TLS behavior.
+
+To use another provider, set `spec.provider.name` or `spec.provider.selector` on the claim.
+The same selection applies to `SchemaClaim`. Remove claims using the default provider before
+deleting `DatabaseService`; deletion reports `BlockingClaims` while any bound claim remains.
+The internal PVC and admin Secret remain after removal so the data can be recovered or deleted
+explicitly by an administrator.
 
 ## Status and limitations
 

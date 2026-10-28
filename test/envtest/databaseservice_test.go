@@ -29,13 +29,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-
-	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
@@ -45,8 +44,8 @@ import (
 	"github.com/opendatahub-io/opendatahub-db-operator/test/support"
 )
 
-// TestDatabaseServiceReconcilesToReady verifies status writes against the local API server.
-func TestDatabaseServiceReconcilesToReady(t *testing.T) {
+// TestDatabaseServiceCreatesDefaultProvider verifies the service and provider against the local API server.
+func TestDatabaseServiceCreatesDefaultProvider(t *testing.T) {
 	ctrl.SetLogger(logr.Discard())
 
 	// NewWithT snapshots duration defaults; set them before constructing g.
@@ -104,6 +103,7 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 	g.Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue(), "manager cache failed to sync")
 
 	cli := mgr.GetClient()
+	g.Expect(cli.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.OperatorNamespace}})).To(Succeed())
 
 	instance := &servicesv1alpha1.DatabaseService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -121,15 +121,56 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 
 		got := &servicesv1alpha1.DatabaseService{}
 		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(instance), got)).To(Succeed())
-		g.Expect(got.Status.Phase).To(Equal(reconciler.DefaultPhaseReady))
+		g.Expect(got.Status.DefaultProviderName).To(Equal(cfg.DefaultProviderName))
 
 		readyCond := conditions.FindStatusCondition(got, string(fwapi.ConditionTypeReady))
 		g.Expect(readyCond).NotTo(BeNil(), "no Ready condition on status.conditions")
-		g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
 		release := got.Status.ComponentReleaseStatus.GetRelease(moduleconfig.ReleasePlatform)
 		g.Expect(release).NotTo(BeNil(), "no platform release in status.releases")
 		g.Expect(release.Version).To(Equal(cfg.ComponentRelease().Version))
 	}).Should(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		provider := &infraApi.DatabaseProvider{}
+		g.Expect(cli.Get(ctx, client.ObjectKey{Name: cfg.DefaultProviderName}, provider)).To(Succeed())
+		g.Expect(provider.Spec.Type).To(Equal(infraApi.ProviderTypeInternal))
+		g.Expect(provider.Spec.Internal.Storage.Size.String()).To(Equal("20Gi"))
+		statefulSet := &appsv1.StatefulSet{}
+		key := client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: cfg.DefaultProviderName}
+		g.Expect(cli.Get(ctx, key, statefulSet)).To(Succeed())
+		g.Expect(*statefulSet.Spec.Replicas).To(Equal(pginstance.InternalPostgresReplicaCount))
+	}).Should(Succeed())
+
+	for _, claim := range []client.Object{
+		&infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "default-database", Namespace: cfg.OperatorNamespace}},
+		&infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Name: "default-schema", Namespace: cfg.OperatorNamespace}},
+	} {
+		g.Expect(cli.Create(ctx, claim)).To(Succeed())
+	}
+	g.Eventually(func(g Gomega) {
+		database := &infraApi.DatabaseClaim{}
+		key := client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: "default-database"}
+		g.Expect(cli.Get(ctx, key, database)).To(Succeed())
+		g.Expect(database.Status.Provider).To(Equal(cfg.DefaultProviderName))
+		schema := &infraApi.SchemaClaim{}
+		key = client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: "default-schema"}
+		g.Expect(cli.Get(ctx, key, schema)).To(Succeed())
+		g.Expect(schema.Status.Provider).To(Equal(cfg.DefaultProviderName))
+	}).Should(Succeed())
+	databaseClaim := &infraApi.DatabaseClaim{}
+	claimKey := client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: "default-database"}
+	g.Eventually(func() error {
+		if err := mgr.GetAPIReader().Get(ctx, claimKey, databaseClaim); err != nil {
+			return err
+		}
+		databaseClaim.Annotations = map[string]string{"test": "updated"}
+		return cli.Update(ctx, databaseClaim)
+	}).Should(Succeed())
+	g.Expect(mgr.GetAPIReader().Get(ctx, claimKey, databaseClaim)).To(Succeed())
+	databaseClaim.Spec.Provider.Name = "other-provider"
+	err = cli.Update(ctx, databaseClaim)
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "an implicit binding must not be changed after creation: %v", err)
 
 	provider := &infraApi.DatabaseProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "external-missing-secret"},
@@ -188,5 +229,50 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		tlsCondition := conditions.FindStatusCondition(got, "TLSConfiguration")
 		g.Expect(tlsCondition).NotTo(BeNil())
 		g.Expect(tlsCondition.Reason).To(Equal("CertManagerUnavailable"))
+	}).Should(Succeed())
+
+	g.Expect(cli.Delete(ctx, instance)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		got := &servicesv1alpha1.DatabaseService{}
+		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(instance), got)).To(Succeed())
+		blocked := conditions.FindStatusCondition(got, "DefaultProviderReady")
+		g.Expect(blocked).NotTo(BeNil())
+		g.Expect(blocked.Reason).To(Equal("BlockingClaims"))
+	}).Should(Succeed())
+	g.Expect(cli.Get(ctx, client.ObjectKey{Name: cfg.DefaultProviderName}, &infraApi.DatabaseProvider{})).To(Succeed())
+
+	for _, claim := range []client.Object{
+		&infraApi.DatabaseClaim{},
+		&infraApi.SchemaClaim{},
+	} {
+		key := client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: "default-database"}
+		if _, ok := claim.(*infraApi.SchemaClaim); ok {
+			key.Name = "default-schema"
+		}
+		g.Expect(cli.Get(ctx, key, claim)).To(Succeed())
+		g.Expect(cli.Delete(ctx, claim)).To(Succeed())
+		g.Eventually(func() error {
+			if err := cli.Get(ctx, key, claim); apierrors.IsNotFound(err) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			claim.SetFinalizers(nil)
+			return cli.Update(ctx, claim)
+		}).Should(Succeed())
+	}
+	g.Eventually(func(g Gomega) {
+		err := cli.Get(ctx, client.ObjectKey{Name: cfg.DefaultProviderName}, &infraApi.DatabaseProvider{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "default provider should be removed after claims")
+		err = cli.Get(ctx, client.ObjectKeyFromObject(instance), &servicesv1alpha1.DatabaseService{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "DatabaseService should finish deleting")
+		for _, obj := range []client.Object{&corev1.PersistentVolumeClaim{}, &corev1.Secret{}} {
+			key := client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: cfg.DefaultProviderName}
+			if _, ok := obj.(*corev1.Secret); ok {
+				key.Name += "-admin"
+			}
+			g.Expect(cli.Get(ctx, key, obj)).To(Succeed())
+			g.Expect(obj.GetOwnerReferences()).To(BeEmpty())
+		}
 	}).Should(Succeed())
 }

@@ -60,11 +60,13 @@ type SchemaConnectionStatus struct {
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.secretName) == has(self.secretName)",message="secretName cannot be added or removed after claim creation"
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.schema) == has(self.schema)",message="schema cannot be added or removed after claim creation"
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.database) == has(self.database)",message="database cannot be added or removed after claim creation"
+// +kubebuilder:validation:XValidation:rule="(!has(oldSelf.provider) || (!has(oldSelf.provider.name) && !has(oldSelf.provider.selector))) == (!has(self.provider) || (!has(self.provider.name) && !has(self.provider.selector)))",message="provider selection cannot be added or removed after claim creation"
 type SchemaClaimSpec struct {
-	// Provider selects the DatabaseProvider to provision against.
-	// +kubebuilder:validation:Required
+	// Provider selects the DatabaseProvider to provision against. Omission
+	// selects the DatabaseService default provider.
+	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="provider is immutable once set"
-	Provider ProviderRef `json:"provider"`
+	Provider ProviderRef `json:"provider,omitempty"`
 
 	// SecretName overrides the name of the credentials Secret projected in the
 	// claim namespace. If omitted, the default is "sc-" plus the claim name so a

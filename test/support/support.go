@@ -41,6 +41,10 @@ const (
 	// poll interval.
 	DefaultConsistentlyPollingInterval = 2 * time.Second
 
+	// namespaceDeletionPollInterval is how often WaitNamespaceDeletion checks
+	// whether the namespace has finished terminating.
+	namespaceDeletionPollInterval = 2 * time.Second
+
 	// DefaultIntegrationTestNamespace is the namespace integration tests
 	// operate in when INTEGRATION_TEST_NAMESPACE isn't set.
 	DefaultIntegrationTestNamespace = "opendatahub-db-operator-integration"
@@ -151,4 +155,36 @@ func DeleteNamespace(ctx context.Context, cli client.Client, name string, expect
 	}
 
 	return nil
+}
+
+// WaitNamespaceDeletion blocks until the namespace is gone. A same-named
+// namespace with a different UID counts as gone: it is not the object the
+// caller deleted. The context bounds the wait; expiry returns an error so
+// teardown fails loudly instead of deferring the problem to the next run.
+func WaitNamespaceDeletion(ctx context.Context, cli client.Client, name string, deletedUID types.UID) error {
+	if cli == nil {
+		return fmt.Errorf("client is nil")
+	}
+
+	ticker := time.NewTicker(namespaceDeletionPollInterval)
+	defer ticker.Stop()
+
+	for {
+		existing := &corev1.Namespace{}
+		err := cli.Get(ctx, client.ObjectKey{Name: name}, existing)
+		switch {
+		case apierrors.IsNotFound(err):
+			return nil
+		case err != nil:
+			return fmt.Errorf("reading namespace %q: %w", name, err)
+		case existing.UID != deletedUID:
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("namespace %q still terminating: %w", name, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }

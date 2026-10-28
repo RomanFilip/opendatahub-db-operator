@@ -39,6 +39,9 @@ type DatabaseServiceSpec struct {
 type DatabaseServiceStatus struct {
 	fwapi.Status                  `json:",inline"`
 	common.ComponentReleaseStatus `json:",inline"`
+	// DefaultProviderName records the install-time name so later configuration
+	// changes cannot silently redirect providerless claims.
+	DefaultProviderName string `json:"defaultProviderName,omitempty"`
 }
 
 // +kubebuilder:object:root=true

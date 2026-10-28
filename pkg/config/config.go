@@ -25,6 +25,7 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	operatorversion "github.com/operator-framework/api/pkg/lib/version"
 	"github.com/spf13/viper"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	common "github.com/opendatahub-io/odh-platform-utilities/api/common"
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
@@ -54,9 +55,10 @@ func (v *PlatformVersion) UnmarshalText(text []byte) error {
 }
 
 const (
-	KeyOperatorNS      = "operator-namespace"
-	KeyPlatformType    = "platformType"
-	KeyPlatformVersion = "platformVersion"
+	KeyOperatorNS          = "operator-namespace"
+	KeyPlatformType        = "platformType"
+	KeyPlatformVersion     = "platformVersion"
+	KeyDefaultProviderName = "default-provider-name"
 
 	OperatorConfigMapName = "odh-databaseservice-config"
 
@@ -100,6 +102,7 @@ const (
 	DefaultOperatorNS      = "odh-db-operator-system"
 	DefaultPlatformType    = PlatformTypeOpenDataHub
 	DefaultPlatformVersion = ""
+	DefaultProviderName    = "rhai-db"
 
 	DefaultMetricsBindAddr       = ":8080"
 	DefaultHealthBindAddr        = ":8081"
@@ -150,9 +153,10 @@ var TestedPostgresVersions = postgres.MajorVersionRange{Minimum: 13, Maximum: 17
 // defaults, and independent retry intervals for DatabaseService,
 // DatabaseProvider, DatabaseClaim, and SchemaClaim reconciliation.
 type Config struct {
-	OperatorNamespace string          `mapstructure:"operator-namespace"`
-	PlatformType      string          `mapstructure:"platformType"`
-	PlatformVersion   PlatformVersion `mapstructure:"platformVersion"`
+	OperatorNamespace   string          `mapstructure:"operator-namespace"`
+	DefaultProviderName string          `mapstructure:"default-provider-name"`
+	PlatformType        string          `mapstructure:"platformType"`
+	PlatformVersion     PlatformVersion `mapstructure:"platformVersion"`
 	// PostgresImage is the Internal provider image. It must implement the Red Hat
 	// PostgreSQL container startup contract used by the rendered StatefulSet.
 	PostgresImage    string           `mapstructure:"postgres-image"`
@@ -310,6 +314,15 @@ func Load(opts ...Option) (*Config, error) {
 	// SetDefault; treat blank as unset so Internal always gets a usable image.
 	if cfg.PostgresImage == "" {
 		cfg.PostgresImage = DefaultInternalPostgresImage
+	}
+	if cfg.DefaultProviderName == "" {
+		cfg.DefaultProviderName = DefaultProviderName
+	}
+	if len(cfg.DefaultProviderName) > 50 || len(validation.IsDNS1035Label(cfg.DefaultProviderName)) != 0 {
+		return nil, fmt.Errorf(
+			"default provider name %q must be a DNS-1035 label of at most 50 characters",
+			cfg.DefaultProviderName,
+		)
 	}
 
 	return cfg, nil

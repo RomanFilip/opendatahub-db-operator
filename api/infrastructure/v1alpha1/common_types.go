@@ -60,11 +60,10 @@ const (
 )
 
 // ProviderRef selects a DatabaseProvider by exact name or by a label
-// selector matched against DatabaseProvider capability labels -- mutually
-// exclusive, enforced by the CEL rule below (mirrors PVC.spec.storageClassName
-// vs PVC.spec.selector, docs/plan.md §1).
+// selector matched against DatabaseProvider capability labels. Name and
+// selector are mutually exclusive when set, enforced by the CEL rule below.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.name) ? 1 : 0) + (has(self.selector) ? 1 : 0) == 1",message="exactly one of name or selector must be set"
+// +kubebuilder:validation:XValidation:rule="(has(self.name) ? 1 : 0) + (has(self.selector) ? 1 : 0) <= 1",message="name and selector cannot both be set"
 type ProviderRef struct {
 	// Name is the exact DatabaseProvider name to bind to.
 	// +optional

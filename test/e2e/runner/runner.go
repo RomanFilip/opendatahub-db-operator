@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +39,9 @@ const (
 	defaultCertManagerVersion = "v1.17.2"
 	defaultTestTimeout        = "15m"
 	defaultTestPackage        = "github.com/opendatahub-io/opendatahub-db-operator/test/e2e"
+	// defaultNamespaceDeleteTimeout bounds how long Teardown waits for the
+	// e2e namespace to finish terminating after requesting its deletion.
+	defaultNamespaceDeleteTimeout = 5 * time.Minute
 )
 
 type Result struct {
@@ -172,7 +176,9 @@ func (r *Runner) Teardown() int {
 		}
 	}
 
-	// Delete the namespace via support.DeleteNamespace (UID-preconditioned).
+	// Delete the namespace via support.DeleteNamespace (UID-preconditioned),
+	// then wait out termination so a leftover Terminating namespace cannot
+	// reject the next run's setup.
 	r.logf("deleting namespace %s", namespace)
 	ns := &corev1.Namespace{}
 	if err := cli.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
@@ -186,6 +192,17 @@ func (r *Runner) Teardown() int {
 		r.logf("failed to delete namespace %s: %v", namespace, err)
 		if exitCode == 0 {
 			exitCode = 1
+		}
+	} else {
+		waitTimeout := envDurationOr("E2E_NAMESPACE_DELETE_TIMEOUT", defaultNamespaceDeleteTimeout)
+		waitCtx, cancelWait := context.WithTimeout(ctx, waitTimeout)
+		defer cancelWait()
+		r.logf("waiting for namespace %s to terminate", namespace)
+		if err := support.WaitNamespaceDeletion(waitCtx, cli, namespace, ns.UID); err != nil {
+			r.logf("namespace %s did not finish terminating: %v", namespace, err)
+			if exitCode == 0 {
+				exitCode = 1
+			}
 		}
 	}
 
@@ -301,4 +318,16 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envDurationOr(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }

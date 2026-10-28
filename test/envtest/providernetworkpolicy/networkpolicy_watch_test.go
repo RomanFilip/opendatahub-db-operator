@@ -17,13 +17,15 @@ limitations under the License.
 // Package providernetworkpolicy runs in a separate test process because
 // controller-runtime rejects duplicate controller names across managers in
 // one process. Only the DatabaseProvider reconciler is registered so the
-// claim controller cannot overwrite the synthetic Provisioned status.
+// claim controllers cannot overwrite the synthetic Provisioned status.
 package providernetworkpolicy
 
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
@@ -31,6 +33,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -46,10 +49,15 @@ import (
 	"github.com/opendatahub-io/opendatahub-db-operator/test/support"
 )
 
-// TestInternalNetworkPolicyUpdatesWhenClaimProvisioned verifies claim watches
-// enqueue the provider so NetworkPolicy ingress namespaces update as soon as
-// a DatabaseClaim becomes Provisioned (not only on periodic retry).
-func TestInternalNetworkPolicyUpdatesWhenClaimProvisioned(t *testing.T) {
+// unrelatedClaimWindow bounds the Consistently assertion that an unrelated
+// provider stays untouched: the periodic requeue is slower than this window,
+// so only an erroneous watch enqueue can violate it.
+const unrelatedClaimWindow = 10 * time.Second
+
+// TestClaimWatchesDriveProviderAdmission verifies claim watches refresh
+// Internal NetworkPolicy ingress on claim status changes without waiting for
+// the periodic retry. Subtests share one manager with distinct resource names.
+func TestClaimWatchesDriveProviderAdmission(t *testing.T) {
 	ctrl.SetLogger(logr.Discard())
 
 	gomegaCfg := support.LoadGomegaConfig()
@@ -111,62 +119,261 @@ func TestInternalNetworkPolicyUpdatesWhenClaimProvisioned(t *testing.T) {
 	g.Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue())
 
 	cli := mgr.GetClient()
-	g.Expect(cli.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "database-system"}})).To(Succeed())
-	g.Expect(cli.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "claim-workload"}})).To(Succeed())
 
-	provider := &infraApi.DatabaseProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
-		Spec: infraApi.DatabaseProviderSpec{
-			Type: infraApi.ProviderTypeInternal,
-			Internal: &infraApi.InternalProviderSpec{
-				Namespace: "database-system",
-				Storage:   infraApi.StorageSpec{Size: resource.MustParse("1Gi")},
-			},
-		},
+	ensureNamespace := func(g Gomega, name string) {
+		err := cli.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
+		if err != nil {
+			g.Expect(apierrors.IsAlreadyExists(err)).To(BeTrue(), "creating namespace %s: %v", name, err)
+		}
 	}
-	g.Expect(cli.Create(ctx, provider)).To(Succeed())
 
-	internalKey := client.ObjectKey{Namespace: "database-system", Name: "internal"}
-	g.Eventually(func(g Gomega) {
-		sts := &appsv1.StatefulSet{}
-		g.Expect(cli.Get(ctx, internalKey, sts)).To(Succeed())
+	// expectPolicyAdmits asserts the exact ingress peer set of the provider's
+	// NetworkPolicy: the operator pod plus one namespace-selector peer whose
+	// values are exactly the given namespaces.
+	expectPolicyAdmits := func(g Gomega, key client.ObjectKey, namespaces ...string) {
 		policy := &networkingv1.NetworkPolicy{}
-		g.Expect(cli.Get(ctx, internalKey, policy)).To(Succeed())
+		g.Expect(cli.Get(ctx, key, policy)).To(Succeed())
 		g.Expect(policy.Spec.Ingress).To(HaveLen(1))
-		g.Expect(policy.Spec.Ingress[0].From).To(HaveLen(1))
-	}).Should(Succeed())
-
-	claim := &infraApi.DatabaseClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "analytics", Namespace: "claim-workload"},
-		Spec: infraApi.DatabaseClaimSpec{
-			Provider: infraApi.ProviderRef{Name: "internal"},
-			Database: "analytics",
-		},
+		from := policy.Spec.Ingress[0].From
+		g.Expect(from).To(ContainElement(networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"kubernetes.io/metadata.name": cfg.OperatorNamespace,
+			}},
+			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"app.kubernetes.io/name": "opendatahub-db-operator",
+			}},
+		}))
+		if len(namespaces) == 0 {
+			g.Expect(from).To(HaveLen(1))
+			return
+		}
+		sorted := slices.Clone(namespaces)
+		slices.Sort(sorted)
+		g.Expect(from).To(HaveLen(2))
+		g.Expect(from).To(ContainElement(networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key:      "kubernetes.io/metadata.name",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   sorted,
+			}}},
+		}))
 	}
-	g.Expect(cli.Create(ctx, claim)).To(Succeed())
-	claim.Status.Provider = "internal"
-	claim.Status.Conditions = []fwapi.Condition{{
-		Type:               dbcontroller.ConditionProvisioned,
-		Status:             metav1.ConditionTrue,
-		Reason:             "UserProvisioned",
-		LastTransitionTime: metav1.Now(),
-	}}
-	g.Expect(cli.Status().Update(ctx, claim)).To(Succeed())
 
-	g.Eventually(func(g Gomega) {
-		policy := &networkingv1.NetworkPolicy{}
-		g.Expect(cli.Get(ctx, internalKey, policy)).To(Succeed())
-		g.Expect(policy.Spec.Ingress).To(HaveLen(1))
-		g.Expect(policy.Spec.Ingress[0].From).To(ContainElement(
-			networkingv1.NetworkPolicyPeer{
-				NamespaceSelector: &metav1.LabelSelector{
-					MatchExpressions: []metav1.LabelSelectorRequirement{{
-						Key:      "kubernetes.io/metadata.name",
-						Operator: metav1.LabelSelectorOpIn,
-						Values:   []string{"claim-workload"},
-					}},
+	// newInternalProvider creates an Internal provider and waits until its
+	// instance and NetworkPolicy render with operator-only admission.
+	newInternalProvider := func(t *testing.T, name, namespace string) client.ObjectKey {
+		g := NewWithT(t)
+		ensureNamespace(g, namespace)
+		provider := &infraApi.DatabaseProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: infraApi.DatabaseProviderSpec{
+				Type: infraApi.ProviderTypeInternal,
+				Internal: &infraApi.InternalProviderSpec{
+					Namespace: namespace,
+					Storage:   infraApi.StorageSpec{Size: resource.MustParse("1Gi")},
 				},
 			},
-		))
-	}).Should(Succeed())
+		}
+		g.Expect(cli.Create(ctx, provider)).To(Succeed())
+		key := client.ObjectKey{Namespace: namespace, Name: name}
+		g.Eventually(func(g Gomega) {
+			sts := &appsv1.StatefulSet{}
+			g.Expect(cli.Get(ctx, key, sts)).To(Succeed())
+			expectPolicyAdmits(g, key)
+		}).Should(Succeed())
+		return key
+	}
+
+	provisionedCondition := func(provisioned bool) []fwapi.Condition {
+		conditionStatus, reason := metav1.ConditionFalse, "UserDeprovisioned"
+		if provisioned {
+			conditionStatus, reason = metav1.ConditionTrue, "UserProvisioned"
+		}
+		return []fwapi.Condition{{
+			Type:               dbcontroller.ConditionProvisioned,
+			Status:             conditionStatus,
+			Reason:             reason,
+			LastTransitionTime: metav1.Now(),
+		}}
+	}
+
+	setDatabaseClaimStatus := func(g Gomega, key client.ObjectKey, provider string, provisioned bool) {
+		g.Eventually(func(g Gomega) {
+			current := &infraApi.DatabaseClaim{}
+			g.Expect(cli.Get(ctx, key, current)).To(Succeed())
+			current.Status.Provider = provider
+			current.Status.Conditions = provisionedCondition(provisioned)
+			g.Expect(cli.Status().Update(ctx, current)).To(Succeed())
+		}).Should(Succeed())
+	}
+
+	setSchemaClaimStatus := func(g Gomega, key client.ObjectKey, provider string, provisioned bool) {
+		g.Eventually(func(g Gomega) {
+			current := &infraApi.SchemaClaim{}
+			g.Expect(cli.Get(ctx, key, current)).To(Succeed())
+			current.Status.Provider = provider
+			current.Status.Conditions = provisionedCondition(provisioned)
+			g.Expect(cli.Status().Update(ctx, current)).To(Succeed())
+		}).Should(Succeed())
+	}
+
+	selectorRef := infraApi.ProviderRef{
+		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"db.infrastructure.opendatahub.io/tier": "shared"}},
+	}
+
+	t.Run("database claim bind admits the claim namespace", func(t *testing.T) {
+		g := NewWithT(t)
+		providerKey := newInternalProvider(t, "internal-bind", "database-system")
+		ensureNamespace(g, "bind-workload")
+		claim := &infraApi.DatabaseClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "analytics", Namespace: "bind-workload"},
+			Spec: infraApi.DatabaseClaimSpec{
+				Provider: infraApi.ProviderRef{Name: providerKey.Name},
+				Database: "analytics",
+			},
+		}
+		g.Expect(cli.Create(ctx, claim)).To(Succeed())
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(claim), providerKey.Name, true)
+
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey, "bind-workload")
+		}).Should(Succeed())
+	})
+
+	t.Run("schema claim bind admits the claim namespace", func(t *testing.T) {
+		g := NewWithT(t)
+		providerKey := newInternalProvider(t, "internal-schema", "database-system")
+		ensureNamespace(g, "schema-workload")
+		claim := &infraApi.SchemaClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "feature-store", Namespace: "schema-workload"},
+			Spec:       infraApi.SchemaClaimSpec{Provider: infraApi.ProviderRef{Name: providerKey.Name}},
+		}
+		g.Expect(cli.Create(ctx, claim)).To(Succeed())
+		setSchemaClaimStatus(g, client.ObjectKeyFromObject(claim), providerKey.Name, true)
+
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey, "schema-workload")
+		}).Should(Succeed())
+	})
+
+	t.Run("ceasing one claim keeps admission while another holds the namespace", func(t *testing.T) {
+		g := NewWithT(t)
+		providerKey := newInternalProvider(t, "internal-cease", "database-system")
+		ensureNamespace(g, "cease-workload")
+		holder := &infraApi.DatabaseClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "holder", Namespace: "cease-workload"},
+			Spec:       infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: providerKey.Name}},
+		}
+		leaver := &infraApi.DatabaseClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "leaver", Namespace: "cease-workload"},
+			Spec:       infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: providerKey.Name}},
+		}
+		g.Expect(cli.Create(ctx, holder)).To(Succeed())
+		g.Expect(cli.Create(ctx, leaver)).To(Succeed())
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(holder), providerKey.Name, true)
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(leaver), providerKey.Name, true)
+
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey, "cease-workload")
+		}).Should(Succeed())
+
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(leaver), providerKey.Name, false)
+		g.Consistently(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey, "cease-workload")
+		}).WithTimeout(unrelatedClaimWindow).Should(Succeed())
+
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(holder), providerKey.Name, false)
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey)
+		}).Should(Succeed())
+	})
+
+	t.Run("deleting the last claim removes admission", func(t *testing.T) {
+		g := NewWithT(t)
+		providerKey := newInternalProvider(t, "internal-delete", "database-system")
+		ensureNamespace(g, "delete-workload")
+		claim := &infraApi.DatabaseClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "short-lived", Namespace: "delete-workload"},
+			Spec:       infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: providerKey.Name}},
+		}
+		g.Expect(cli.Create(ctx, claim)).To(Succeed())
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(claim), providerKey.Name, true)
+
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey, "delete-workload")
+		}).Should(Succeed())
+
+		g.Expect(cli.Delete(ctx, claim)).To(Succeed())
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey)
+		}).Should(Succeed())
+	})
+
+	t.Run("selector claim rebind refreshes both providers", func(t *testing.T) {
+		g := NewWithT(t)
+		keyA := newInternalProvider(t, "internal-rebind-a", "database-system")
+		keyB := newInternalProvider(t, "internal-rebind-b", "database-system")
+		ensureNamespace(g, "rebind-workload")
+		claim := &infraApi.DatabaseClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "rebinding", Namespace: "rebind-workload"},
+			Spec:       infraApi.DatabaseClaimSpec{Provider: selectorRef},
+		}
+		g.Expect(cli.Create(ctx, claim)).To(Succeed())
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(claim), keyA.Name, true)
+
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, keyA, "rebind-workload")
+		}).Should(Succeed())
+
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(claim), keyB.Name, true)
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, keyB, "rebind-workload")
+		}).Should(Succeed())
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, keyA)
+		}).Should(Succeed())
+	})
+
+	t.Run("selector claim unbind removes admission", func(t *testing.T) {
+		g := NewWithT(t)
+		providerKey := newInternalProvider(t, "internal-unbind", "database-system")
+		ensureNamespace(g, "unbind-workload")
+		claim := &infraApi.DatabaseClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "unbound", Namespace: "unbind-workload"},
+			Spec:       infraApi.DatabaseClaimSpec{Provider: selectorRef},
+		}
+		g.Expect(cli.Create(ctx, claim)).To(Succeed())
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(claim), providerKey.Name, true)
+
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey, "unbind-workload")
+		}).Should(Succeed())
+
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(claim), "", false)
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, providerKey)
+		}).Should(Succeed())
+	})
+
+	t.Run("unrelated claim leaves admission unchanged", func(t *testing.T) {
+		g := NewWithT(t)
+		watched := newInternalProvider(t, "internal-negative", "database-system")
+		other := newInternalProvider(t, "internal-other", "database-system")
+		ensureNamespace(g, "negative-workload")
+		claim := &infraApi.DatabaseClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "elsewhere", Namespace: "negative-workload"},
+			Spec:       infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: other.Name}},
+		}
+		g.Expect(cli.Create(ctx, claim)).To(Succeed())
+		setDatabaseClaimStatus(g, client.ObjectKeyFromObject(claim), other.Name, true)
+
+		// The referenced provider admitting the namespace proves the claim
+		// transitions actually reached the reconciler.
+		g.Eventually(func(g Gomega) {
+			expectPolicyAdmits(g, other, "negative-workload")
+		}).Should(Succeed())
+		g.Consistently(func(g Gomega) {
+			expectPolicyAdmits(g, watched)
+		}).WithTimeout(unrelatedClaimWindow).Should(Succeed())
+	})
 }

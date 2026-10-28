@@ -47,7 +47,7 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 		return fmt.Errorf("instance is not a SchemaClaim")
 	}
 
-	provider, err := dbcontroller.ResolveForCurrent(ctx, rr.Client, obj.Spec.Provider, obj.Status.Provider)
+	provider, err := dbcontroller.ResolveForCurrentOrDefault(ctx, rr.Client, obj.Spec.Provider, obj.Status.Provider)
 	if err != nil {
 		if notFound, ok := errors.AsType[dbcontroller.ErrNotFound](err); ok {
 			rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,

@@ -39,6 +39,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault(KeyOperatorNS, DefaultOperatorNS)
 	v.SetDefault(KeyPlatformType, DefaultPlatformType)
 	v.SetDefault(KeyPlatformVersion, DefaultPlatformVersion)
+	v.SetDefault(KeyDefaultProviderName, DefaultProviderName)
 
 	v.SetDefault(KeyMetricsBindAddr, DefaultMetricsBindAddr)
 	v.SetDefault(KeyHealthBindAddr, DefaultHealthBindAddr)

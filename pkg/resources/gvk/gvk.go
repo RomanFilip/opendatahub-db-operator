@@ -49,6 +49,8 @@ var (
 var (
 	DatabaseProvider     = infraApi.SchemeGroupVersion.WithKind("DatabaseProvider")
 	DatabaseProviderList = infraApi.SchemeGroupVersion.WithKind("DatabaseProviderList")
+	DatabaseClaim        = infraApi.SchemeGroupVersion.WithKind("DatabaseClaim")
+	SchemaClaim          = infraApi.SchemeGroupVersion.WithKind("SchemaClaim")
 
 	// SecurityContextConstraints is the OpenShift SCC kind. Absent on Kind.
 	SecurityContextConstraints = schema.GroupVersionKind{

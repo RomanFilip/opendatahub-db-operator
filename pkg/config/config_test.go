@@ -37,6 +37,21 @@ func TestLoad_Defaults(t *testing.T) {
 	g.Expect(cfg.PlatformVersion.String()).To(Equal("0.0.0"))
 	g.Expect(cfg.OperatorNamespace).To(Equal(config.DefaultOperatorNS))
 	g.Expect(cfg.PostgresImage).To(Equal(config.DefaultInternalPostgresImage))
+	g.Expect(cfg.DefaultProviderName).To(Equal(config.DefaultProviderName))
+}
+
+func TestLoad_DefaultProviderName(t *testing.T) {
+	g := NewWithT(t)
+	cfg, err := config.Load(config.WithFS(fstest.MapFS{
+		config.KeyDefaultProviderName: {Data: []byte("team-db")},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.DefaultProviderName).To(Equal("team-db"))
+
+	_, err = config.Load(config.WithFS(fstest.MapFS{
+		config.KeyDefaultProviderName: {Data: []byte("invalid.name")},
+	}))
+	g.Expect(err).To(HaveOccurred())
 }
 
 func TestLoad_PostgresImage(t *testing.T) {

@@ -12,12 +12,20 @@ rules:
   - ""
   resources:
   - configmaps
-  - persistentvolumeclaims
   - serviceaccounts
   - services
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - get
+  - list
+  - patch
   - watch
 - apiGroups:
   - ""
@@ -109,8 +117,11 @@ rules:
   resources:
   - databaseproviders
   verbs:
+  - create
+  - delete
   - get
   - list
+  - update
   - watch
 - apiGroups:
   - networking.k8s.io
@@ -144,7 +155,14 @@ rules:
   verbs:
   - get
   - list
+  - update
   - watch
+- apiGroups:
+  - services.platform.opendatahub.io
+  resources:
+  - databaseservices/finalizers
+  verbs:
+  - update
 - apiGroups:
   - services.platform.opendatahub.io
   resources:

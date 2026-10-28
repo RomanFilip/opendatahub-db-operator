@@ -23,8 +23,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -72,44 +74,71 @@ func BroadcastListMapper(
 	}
 }
 
-// EffectiveProviderName returns the DatabaseProvider a claim is bound to or
-// requesting: spec.provider.name when set, otherwise status.provider.
-// Handles typed claims and unstructured watch events (framework watches use
-// unstructured objects).
-func EffectiveProviderName(obj client.Object) string {
+// providerRefNames returns the provider names a claim references in its spec
+// and records as bound in its status. Handles typed and unstructured objects.
+func providerRefNames(obj client.Object) (specName, statusName string) {
 	switch claim := obj.(type) {
 	case *infraApi.DatabaseClaim:
-		if claim.Spec.Provider.Name != "" {
-			return claim.Spec.Provider.Name
-		}
-		return claim.Status.Provider
+		return claim.Spec.Provider.Name, claim.Status.Provider
 	case *infraApi.SchemaClaim:
-		if claim.Spec.Provider.Name != "" {
-			return claim.Spec.Provider.Name
-		}
-		return claim.Status.Provider
+		return claim.Spec.Provider.Name, claim.Status.Provider
 	case *unstructured.Unstructured:
-		if name, _, _ := unstructured.NestedString(claim.Object, "spec", "provider", "name"); name != "" {
-			return name
-		}
-		name, _, _ := unstructured.NestedString(claim.Object, "status", "provider")
-		return name
+		specName, _, _ := unstructured.NestedString(claim.Object, "spec", "provider", "name")
+		statusName, _, _ := unstructured.NestedString(claim.Object, "status", "provider")
+		return specName, statusName
 	default:
-		return ""
+		return "", ""
 	}
 }
 
-// ClaimToProviderMapper enqueues the cluster-scoped DatabaseProvider named by
-// a SchemaClaim or DatabaseClaim. Claims with no resolvable provider are
-// ignored so unrelated events do not fan out to every provider.
-func ClaimToProviderMapper() handler.MapFunc {
-	return func(_ context.Context, obj client.Object) []reconcile.Request {
-		name := EffectiveProviderName(obj)
-		if name == "" {
-			return nil
+// EffectiveProviderName returns the DatabaseProvider a claim is bound to or
+// requesting: spec.provider.name when set, otherwise status.provider.
+func EffectiveProviderName(obj client.Object) string {
+	specName, statusName := providerRefNames(obj)
+	if specName != "" {
+		return specName
+	}
+	return statusName
+}
+
+// ClaimWatchEventHandler enqueues the providers a claim event affects so
+// Internal NetworkPolicy ingress refreshes without waiting for the periodic
+// requeue (RHOAIENG-96275). Updates enqueue the union of old and new provider
+// names because a rebinding or unbinding selector claim leaves the abandoned
+// provider discoverable only in the previous object. Over-enqueueing is safe;
+// the watch predicates filter resync noise.
+func ClaimWatchEventHandler() handler.EventHandler {
+	type claimQueue = workqueue.TypedRateLimitingInterface[reconcile.Request]
+	enqueue := func(q claimQueue, objects ...client.Object) {
+		seen := make(map[reconcile.Request]struct{})
+		for _, obj := range objects {
+			if obj == nil {
+				continue
+			}
+			specName, statusName := providerRefNames(obj)
+			for _, name := range []string{specName, statusName} {
+				if name == "" {
+					continue
+				}
+				req := reconcile.Request{NamespacedName: types.NamespacedName{Name: name}}
+				if _, dup := seen[req]; dup {
+					continue
+				}
+				seen[req] = struct{}{}
+				q.Add(req)
+			}
 		}
-		return []reconcile.Request{{
-			NamespacedName: types.NamespacedName{Name: name},
-		}}
+	}
+	return handler.Funcs{
+		CreateFunc: func(_ context.Context, e event.TypedCreateEvent[client.Object], q claimQueue) {
+			enqueue(q, e.Object)
+		},
+		UpdateFunc: func(_ context.Context, e event.TypedUpdateEvent[client.Object], q claimQueue) {
+			enqueue(q, e.ObjectOld, e.ObjectNew)
+		},
+		DeleteFunc: func(_ context.Context, e event.TypedDeleteEvent[client.Object], q claimQueue) {
+			enqueue(q, e.Object)
+		},
+		// Generic events carry no state transition; the periodic requeue covers them.
 	}
 }

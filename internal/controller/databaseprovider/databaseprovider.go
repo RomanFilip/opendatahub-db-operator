@@ -73,14 +73,14 @@ func NewReconciler(ctx context.Context, mgr ctrl.Manager, cfg *moduleconfig.Conf
 	// Secret watches belong with RHOAIENG-96275's scoped cache; registering
 	// them here would cache Secrets from unrelated namespaces.
 	//
-	// Claim watches enqueue the bound provider so Internal NetworkPolicy
-	// ingress namespaces refresh on Provisioned/bind changes without waiting
+	// Claim watches enqueue the providers a claim event affects so Internal
+	// NetworkPolicy ingress refreshes on claim transitions without waiting
 	// for the provider's periodic requeue (RHOAIENG-96275).
 	claimWatchPreds := reconciler.WithPredicates(predicate.Or(
 		fwpredicates.DefaultPredicate,
 		resourcespredicates.StatusChanged(),
 	))
-	claimToProvider := reconciler.WithEventMapper(dbcontroller.ClaimToProviderMapper())
+	claimToProvider := reconciler.WithEventHandler(dbcontroller.ClaimWatchEventHandler())
 
 	_, err := reconciler.ReconcilerFor(mgr, &infraApi.DatabaseProvider{}).
 		Owns(&appsv1.StatefulSet{}, reconciler.WithPredicates(predicate.Or(

@@ -25,15 +25,12 @@ import (
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
-	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
-	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
-
+	infrav1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	modulemanager "github.com/opendatahub-io/opendatahub-db-operator/pkg/manager"
@@ -42,8 +39,7 @@ import (
 
 const testNamespacePrefix = "opendatahub-db-operator-databaseservice-it"
 
-// TestDatabaseServiceReconcilesToReady verifies status writes against a connected cluster.
-func TestDatabaseServiceReconcilesToReady(t *testing.T) {
+func TestDatabaseServiceCreatesDefaultProvider(t *testing.T) {
 	ctrl.SetLogger(logr.Discard())
 
 	// NewWithT snapshots duration defaults; set them before constructing g.
@@ -69,7 +65,8 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 	g.Expect(discoveryCli.List(context.Background(), &servicesv1alpha1.DatabaseServiceList{})).
 		To(Succeed(), "listing DatabaseService failed -- is the CRD installed? run `make test-integration-setup` first")
 
-	ctx, cancel := context.WithCancel(t.Context())
+	// Keep the manager running through cleanup so it can finish the service finalizer.
+	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	testNamespace := fmt.Sprintf("%s-%d", testNamespacePrefix, time.Now().UnixNano())
@@ -115,19 +112,6 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		)
 	}
 
-	createdUID := instance.UID
-	t.Cleanup(func() {
-		err := cli.Delete(context.Background(), &servicesv1alpha1.DatabaseService{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: servicesv1alpha1.DatabaseServiceInstanceName,
-				UID:  createdUID,
-			},
-		}, client.Preconditions{UID: &createdUID})
-		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
-			t.Errorf("cleaning up test DatabaseService singleton: %v", err)
-		}
-	})
-
 	managerDone := make(chan struct{})
 	var managerErr error
 	go func() {
@@ -138,6 +122,23 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		cancel()
 		<-managerDone
 		g.Expect(managerErr).NotTo(HaveOccurred(), "manager failed while stopping")
+	})
+	createdUID := instance.UID
+	t.Cleanup(func() {
+		err := cli.Delete(ctx, &servicesv1alpha1.DatabaseService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: servicesv1alpha1.DatabaseServiceInstanceName,
+				UID:  createdUID,
+			},
+		}, client.Preconditions{UID: &createdUID})
+		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			t.Errorf("cleaning up test DatabaseService singleton: %v", err)
+			return
+		}
+		g.Eventually(func() bool {
+			current := &servicesv1alpha1.DatabaseService{}
+			return apierrors.IsNotFound(discoveryCli.Get(ctx, client.ObjectKeyFromObject(instance), current))
+		}).WithTimeout(time.Minute).Should(BeTrue(), "DatabaseService finalizer did not finish")
 	})
 
 	g.Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue(), "manager cache failed to sync")
@@ -159,13 +160,13 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 
 		got := &servicesv1alpha1.DatabaseService{}
 		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(instance), got)).To(Succeed())
-		g.Expect(got.Status.Phase).To(Equal(reconciler.DefaultPhaseReady))
-
-		readyCond := conditions.FindStatusCondition(got, string(fwapi.ConditionTypeReady))
-		g.Expect(readyCond).NotTo(BeNil(), "no Ready condition on status.conditions")
-		g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(got.Status.DefaultProviderName).To(Equal(cfg.DefaultProviderName))
 		release := got.Status.ComponentReleaseStatus.GetRelease(moduleconfig.ReleasePlatform)
 		g.Expect(release).NotTo(BeNil(), "no platform release in status.releases")
 		g.Expect(release.Version).To(Equal(cfg.ComponentRelease().Version))
+		provider := &infrav1alpha1.DatabaseProvider{}
+		g.Expect(cli.Get(ctx, client.ObjectKey{Name: cfg.DefaultProviderName}, provider)).To(Succeed())
+		g.Expect(provider.Spec.Type).To(Equal(infrav1alpha1.ProviderTypeInternal))
+		g.Expect(provider.Spec.Internal.Storage.Size.String()).To(Equal("20Gi"))
 	}).Should(Succeed())
 }
