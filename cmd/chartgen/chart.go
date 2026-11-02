@@ -123,7 +123,17 @@ type chartContext struct {
 	// operator-specific rendering to. Any other Deployment in the input
 	// (there shouldn't be one today, but nothing enforces that) is left
 	// alone via transformGeneric instead.
-	operatorDeployment          types.NamespacedName
+	operatorDeployment types.NamespacedName
+	// operatorPodLabels are the operator Deployment's pod-template labels:
+	// the identity a NetworkPolicy must select before chartgen templates
+	// its webhook ingress port, so an unrelated policy in the input keeps
+	// its literal ports.
+	operatorPodLabels map[string]string
+	// operatorWebhookPort is the webhook port the operator Deployment
+	// actually declares; the NetworkPolicy transform templates the ingress
+	// rule carrying this value, so the match derives from the listener
+	// rather than a hardcoded default.
+	operatorWebhookPort         int64
 	operatorConfigMap           types.NamespacedName
 	operatorConfigMapStableName string
 	operatorServiceAccount      types.NamespacedName
@@ -276,6 +286,8 @@ func transformResource(
 		return transformServiceMonitor(obj)
 	case gvk.Service:
 		return transformService(obj)
+	case gvk.NetworkPolicy:
+		return transformNetworkPolicy(obj, chartCtx.operatorPodLabels, chartCtx.operatorWebhookPort)
 	default:
 		return transformGeneric(obj)
 	}
@@ -995,6 +1007,105 @@ func replaceServiceMonitorServerName(raw string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// transformNetworkPolicy templates the webhook ingress port of the
+// operator's own NetworkPolicy from the same chart value the Deployment
+// listens on (controller.webhook.port). The rule to template is found by the
+// port the operator Deployment actually declares, so a kustomize-side port
+// change flows through instead of silently desyncing the policy from the
+// listener, which would leave the API server's webhook calls denied by this
+// very policy. A policy that does not select the operator pod keeps its
+// literal ports.
+func transformNetworkPolicy(
+	obj *unstructured.Unstructured,
+	operatorPodLabels map[string]string,
+	operatorWebhookPort int64,
+) (string, error) {
+	if !policySelectsOperator(obj, operatorPodLabels) || operatorWebhookPort <= 0 {
+		return transformGeneric(obj)
+	}
+
+	ingress, found, err := unstructured.NestedSlice(obj.Object, "spec", "ingress")
+	if err != nil {
+		return "", fmt.Errorf("networkpolicy %s: reading ingress rules: %w", obj.GetName(), err)
+	}
+	if !found {
+		return transformGeneric(obj)
+	}
+
+	stamped := false
+	for _, item := range ingress {
+		rule, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		ports, found, err := unstructured.NestedSlice(rule, "ports")
+		if err != nil || !found {
+			continue
+		}
+		for _, portItem := range ports {
+			port, ok := portItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch portValue := port["port"].(type) {
+			case int64:
+				if portValue == operatorWebhookPort {
+					port["port"] = webhookPortPlaceholder
+					stamped = true
+				}
+			case float64:
+				if portValue == float64(operatorWebhookPort) {
+					port["port"] = webhookPortPlaceholder
+					stamped = true
+				}
+			}
+		}
+		if err := unstructured.SetNestedSlice(rule, ports, "ports"); err != nil {
+			return "", fmt.Errorf("networkpolicy %s: stamping webhook port: %w", obj.GetName(), err)
+		}
+	}
+	if !stamped {
+		// The operator Deployment declares a webhook port but this policy,
+		// which selects the operator pod, admits no ingress on it. Emitting
+		// the policy with literal ports would silently reintroduce the
+		// listener/allowance desync this transform exists to prevent, so
+		// fail generation and make the mismatch explicit.
+		return "", fmt.Errorf(
+			"networkpolicy %s: no ingress rule admits the operator webhook port %d; "+
+				"update the policy in config/default to match the Deployment's %q port",
+			obj.GetName(), operatorWebhookPort, webhookServerPortName)
+	}
+	if err := unstructured.SetNestedSlice(obj.Object, ingress, "spec", "ingress"); err != nil {
+		return "", fmt.Errorf("networkpolicy %s: stamping webhook port: %w", obj.GetName(), err)
+	}
+
+	raw, err := marshalResource(obj)
+	if err != nil {
+		return "", err
+	}
+	raw = replaceNamespace(raw)
+	raw = strings.ReplaceAll(raw, webhookPortPlaceholder, tplWebhookPort)
+	return raw, nil
+}
+
+// policySelectsOperator reports whether the policy's podSelector labels are
+// all carried by the operator Deployment's pod template.
+func policySelectsOperator(obj *unstructured.Unstructured, operatorPodLabels map[string]string) bool {
+	if len(operatorPodLabels) == 0 {
+		return false
+	}
+	selector, found, err := unstructured.NestedStringMap(obj.Object, "spec", "podSelector", "matchLabels")
+	if err != nil || !found || len(selector) == 0 {
+		return false
+	}
+	for key, value := range selector {
+		if operatorPodLabels[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // marshalResource marshals an unstructured resource to YAML.

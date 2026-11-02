@@ -74,6 +74,86 @@ Example:
 	return cmd
 }
 
+// buildChartContext assembles the operator identity chartgen's transforms
+// rely on: which Deployment is the operator's, the pod labels and webhook
+// port its template declares, its ConfigMap and ServiceAccount references,
+// and whether that account is chart-managed.
+func buildChartContext(
+	operatorDeployment *unstructured.Unstructured,
+	operatorConfigMapName string,
+	operatorConfigMapStableName string,
+	saName, saNamespace string,
+	saManaged bool,
+) chartContext {
+	return chartContext{
+		operatorDeployment: types.NamespacedName{
+			Name:      operatorDeployment.GetName(),
+			Namespace: operatorDeployment.GetNamespace(),
+		},
+		operatorPodLabels:   operatorPodTemplateLabels(operatorDeployment),
+		operatorWebhookPort: operatorWebhookContainerPort(operatorDeployment),
+		operatorConfigMap: types.NamespacedName{
+			Name:      operatorConfigMapName,
+			Namespace: operatorDeployment.GetNamespace(),
+		},
+		operatorConfigMapStableName: operatorConfigMapStableName,
+		operatorServiceAccount: types.NamespacedName{
+			Name:      saName,
+			Namespace: saNamespace,
+		},
+		operatorServiceAccountManaged: saManaged,
+	}
+}
+
+// operatorPodTemplateLabels returns the operator Deployment's pod-template
+// labels, or nil when unreadable -- the identity a NetworkPolicy must select
+// before chartgen templates its webhook ingress port.
+func operatorPodTemplateLabels(deployment *unstructured.Unstructured) map[string]string {
+	labels, found, err := unstructured.NestedStringMap(
+		deployment.Object, "spec", "template", "metadata", "labels")
+	if err != nil || !found {
+		return nil
+	}
+	return labels
+}
+
+// operatorWebhookContainerPort returns the containerPort of the port named
+// webhook-server on the manager container, or 0 when it has none. Only the
+// manager container is consulted -- the same container the Deployment
+// transform templates -- so a sidecar declaring its own webhook-server port
+// cannot shift the value. The NetworkPolicy transform aligns its ingress
+// port to this value, so the admitted port is derived from what the
+// Deployment actually declares instead of a hardcoded default -- a
+// kustomize-side port change cannot desync the policy from the listener.
+func operatorWebhookContainerPort(deployment *unstructured.Unstructured) int64 {
+	containers, found, err := unstructured.NestedSlice(
+		deployment.Object, "spec", "template", "spec", "containers")
+	if err != nil || !found {
+		return 0
+	}
+	manager, ok := findManagerContainer(containers)
+	if !ok {
+		return 0
+	}
+	ports, found, err := unstructured.NestedSlice(manager, "ports")
+	if err != nil || !found {
+		return 0
+	}
+	for _, portItem := range ports {
+		port, ok := portItem.(map[string]any)
+		if !ok || port["name"] != webhookServerPortName {
+			continue
+		}
+		switch value := port["containerPort"].(type) {
+		case int64:
+			return value
+		case float64:
+			return int64(value)
+		}
+	}
+	return 0
+}
+
 //nolint:gocyclo // orchestrates decode, validation, render, and atomic chart publish
 func run(
 	reader io.Reader,
@@ -163,22 +243,14 @@ func run(
 	// different account, not evidence this one is chart-managed.
 	saManaged := saName != "" && resourceExists(resources, gvk.ServiceAccount, saName, saNamespace)
 
-	chartCtx := chartContext{
-		operatorDeployment: types.NamespacedName{
-			Name:      operatorDeployment.GetName(),
-			Namespace: operatorDeployment.GetNamespace(),
-		},
-		operatorConfigMap: types.NamespacedName{
-			Name:      operatorConfigMapName,
-			Namespace: operatorDeployment.GetNamespace(),
-		},
-		operatorConfigMapStableName: operatorConfigMapStableName,
-		operatorServiceAccount: types.NamespacedName{
-			Name:      saName,
-			Namespace: saNamespace,
-		},
-		operatorServiceAccountManaged: saManaged,
-	}
+	chartCtx := buildChartContext(
+		operatorDeployment,
+		operatorConfigMapName,
+		operatorConfigMapStableName,
+		saName,
+		saNamespace,
+		saManaged,
+	)
 
 	// Render every template into memory FIRST, before touching outputDir at
 	// all. transformResource can still fail partway through this loop (an
