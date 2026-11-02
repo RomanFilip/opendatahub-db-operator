@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://docs.mergify.com/mergify-configuration-schema.json
+merge_queue:
+  mode: serial
+  max_parallel_checks: 1
+  status_comments: outcomes
+  queue_controls_comment: false
+
+shared:
+  review_ready: &review-ready
+    - base = main
+    - -draft
+    - -conflict
+    - -label ~= ^do-not-merge/
+    - "#changes-requested-reviews-by = 0"
+    - "#approved-reviews-by >= 1"
+  always_required_checks: &always-required-checks
+    - check-success = Lint
+    - check-success = Build
+    - check-success = Verify Manifests
+    - check-success = Helm Chart
+    - check-success = Unit Tests
+    - check-success = Envtest Reconciler Suite
+    - check-success = semgrep-tls
+    - check-success = tls-lint
+  conditional_checks: &conditional-checks
+    # E2E and the Konflux build do not run for documentation-only pull requests.
+    - -check-failure = Cert-manager present
+    - -check-pending = Cert-manager present
+    - -check-failure = Cert-manager absent
+    - -check-pending = Cert-manager absent
+    - -check-failure = Red Hat Konflux / odh-db-operator-on-pull-request
+    - -check-pending = Red Hat Konflux / odh-db-operator-on-pull-request
+
+queue_rules:
+  - name: default
+    batch_size: 1
+    max_checks_retries: 1
+    merge_method: squash
+    update_method: merge
+    branch_protection_injection_mode: queue
+    queue_conditions: &default-queue-conditions
+      - and: *review-ready
+      - and: *always-required-checks
+      - and: *conditional-checks
+    merge_conditions: *default-queue-conditions
+
+pull_request_rules:
+  - name: Queue approved pull requests
+    conditions: *review-ready
+    actions:
+      queue:
+        name: default
