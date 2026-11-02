@@ -186,6 +186,160 @@ subjects:
 // namespace is a different principal -- matching by name alone would rename
 // it (and its own, unrelated namespace) to the operator's identity, handing
 // this binding's permissions to the real operator account instead.
+
+func TestTransformNetworkPolicy_TemplatesWebhookPortForOperatorPolicy(t *testing.T) {
+	g := NewWithT(t)
+
+	obj := unstructuredFromYAML(t, `
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opendatahub-db-operator
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [openshift-monitoring]
+    ports:
+    - port: 8443
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          policy-group.network.openshift.io/host-network: ""
+    ports:
+    - port: 9999
+      protocol: TCP
+  egress:
+  - {}
+`)
+
+	// A non-default port (9999) proves the transform matches the port the
+	// operator Deployment declares, not a hardcoded default.
+	rendered, err := transformNetworkPolicy(&obj, map[string]string{
+		"app.kubernetes.io/name": "opendatahub-db-operator",
+	}, 9999)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(
+		`port: {{ default 9443 (int (index .Values.config "controller.webhook.port")) }}`),
+		"the webhook ingress port must template from the same chart value as the Deployment")
+	g.Expect(rendered).To(ContainSubstring("port: 8443"),
+		"the metrics port is not chart-configurable and must stay literal")
+	g.Expect(strings.Count(rendered, "default 9443")).To(Equal(1))
+}
+
+func TestTransformNetworkPolicy_LeavesForeignPolicyAlone(t *testing.T) {
+	g := NewWithT(t)
+
+	// A policy for some other workload that happens to allow 9443: its
+	// ports must stay literal, or the operator's webhook value would leak
+	// into an unrelated policy's rules.
+	obj := unstructuredFromYAML(t, `
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: some-other-policy
+  namespace: system
+spec:
+  podSelector:
+    matchLabels:
+      app: something-else
+  ingress:
+  - ports:
+    - port: 9443
+      protocol: TCP
+`)
+
+	rendered, err := transformNetworkPolicy(&obj, map[string]string{
+		"app.kubernetes.io/name": "opendatahub-db-operator",
+	}, 9443)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring("port: 9443"))
+	g.Expect(rendered).NotTo(ContainSubstring("default 9443"))
+}
+
+func TestOperatorWebhookContainerPort(t *testing.T) {
+	g := NewWithT(t)
+
+	deployment := unstructuredFromYAML(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: manager
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        ports:
+        - name: webhook-server
+          containerPort: 9443
+        - name: health
+          containerPort: 8081
+      - name: proxy
+        ports:
+        - name: webhook-server
+          containerPort: 9444
+`)
+	g.Expect(operatorWebhookContainerPort(&deployment)).To(Equal(int64(9443)),
+		"the first webhook-server named port is the manager's")
+
+	noWebhook := unstructuredFromYAML(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: manager
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        ports:
+        - name: health
+          containerPort: 8081
+`)
+	g.Expect(operatorWebhookContainerPort(&noWebhook)).To(Equal(int64(0)),
+		"a Deployment without a webhook-server port must yield 0, leaving NetworkPolicy ports literal")
+}
+
+func TestOperatorWebhookContainerPort_SidecarFirstIsIgnored(t *testing.T) {
+	g := NewWithT(t)
+
+	// A sidecar declaring its own webhook-server port, listed BEFORE the
+	// manager: the extraction must still return the manager's port, matching
+	// the container the Deployment transform templates.
+	deployment := unstructuredFromYAML(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: manager
+spec:
+  template:
+    spec:
+      containers:
+      - name: kube-auth-proxy
+        ports:
+        - name: webhook-server
+          containerPort: 9444
+      - name: manager
+        ports:
+        - name: webhook-server
+          containerPort: 9443
+`)
+	g.Expect(operatorWebhookContainerPort(&deployment)).To(Equal(int64(9443)),
+		"only the manager container's webhook-server port may be extracted")
+}
+
 func TestTransformRoleBinding_IgnoresSameNameDifferentNamespace(t *testing.T) {
 	g := NewWithT(t)
 

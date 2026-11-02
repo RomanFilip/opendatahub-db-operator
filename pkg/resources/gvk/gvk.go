@@ -50,6 +50,7 @@ var (
 	ServiceMonitor                 = schema.GroupVersionKind{
 		Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor",
 	}
+	NetworkPolicy = fwgvk.NetworkPolicy
 )
 
 var (

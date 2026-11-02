@@ -1,0 +1,10 @@
+# Kind cluster configuration for the default-deny baseline e2e job: the
+# default CNI is disabled and Calico is installed by the workflow instead
+# (the plain calico.yaml manifest), so NetworkPolicy is enforced and the
+# baseline scenario's deny-all phase runs for real rather than skipping.
+# The pod subnet matches Calico's default IP pool CIDR (192.168.0.0/16).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: 192.168.0.0/16

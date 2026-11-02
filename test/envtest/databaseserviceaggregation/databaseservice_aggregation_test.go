@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
@@ -188,8 +189,7 @@ func TestDatabaseServiceAggregatesProviderStatus(t *testing.T) {
 	t.Run("out-of-range version is informational", func(t *testing.T) {
 		g := NewWithT(t)
 
-		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(provider), provider)).To(Succeed())
-		provider.Status.Conditions = []fwapi.Condition{
+		outOfRange := []fwapi.Condition{
 			{
 				Type:    "Reachable",
 				Status:  metav1.ConditionTrue,
@@ -204,7 +204,13 @@ func TestDatabaseServiceAggregatesProviderStatus(t *testing.T) {
 				Message:  "PostgreSQL 12.0 is outside the tested range (13 through 17); connections and claims remain allowed",
 			},
 		}
-		g.Expect(cli.Status().Update(ctx, provider)).To(Succeed())
+		// The provider controller's own status writes race this update, so
+		// re-read and retry on conflict instead of failing the subtest.
+		g.Eventually(func(g Gomega) {
+			g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(provider), provider)).To(Succeed())
+			provider.Status.Conditions = outOfRange
+			g.Expect(cli.Status().Update(ctx, provider)).To(Succeed())
+		}).WithTimeout(time.Minute).Should(Succeed())
 		triggerServiceReconcile(t, ctx, cli, service)
 
 		eventuallyService(t, ctx, cli, service, func(g Gomega, got *servicesv1alpha1.DatabaseService) {
@@ -303,14 +309,18 @@ func triggerServiceReconcile(
 	t.Helper()
 	g := NewWithT(t)
 
-	g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(service), service)).To(Succeed())
-	annotations := service.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	annotations["test.opendatahub.io/reconcile"] = t.Name()
-	service.SetAnnotations(annotations)
-	g.Expect(cli.Update(ctx, service)).To(Succeed())
+	// The service controller's own status writes race this annotation bump,
+	// so re-read and retry on conflict instead of failing the test.
+	g.Eventually(func(g Gomega) {
+		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(service), service)).To(Succeed())
+		annotations := service.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations["test.opendatahub.io/reconcile"] = t.Name()
+		service.SetAnnotations(annotations)
+		g.Expect(cli.Update(ctx, service)).To(Succeed())
+	}).WithTimeout(time.Minute).Should(Succeed())
 }
 
 func expectServerVersion(
