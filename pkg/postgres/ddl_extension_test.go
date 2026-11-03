@@ -73,7 +73,7 @@ func (c *extensionStubClient) Ping(context.Context) error {
 func (c *extensionStubClient) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, nil
 }
-func (c *extensionStubClient) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (c *extensionStubClient) Query(context.Context, string, ...any) (Rows, error) {
 	return nil, nil
 }
 func (c *extensionStubClient) QueryRow(_ context.Context, sql string, args ...any) (pgx.Row, error) {

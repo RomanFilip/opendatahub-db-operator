@@ -37,6 +37,7 @@ import (
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
+	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 var errInternalAdminCredentialsLost = errors.New("internal admin credentials lost")
@@ -368,8 +369,8 @@ func computeInternalAdminSecret(
 		return res, err
 	}
 
-	password := existing.Data[postgres.SecretKeyPassword]
-	if len(password) == 0 {
+	password := secretvalue.FromBytes(existing.Data[postgres.SecretKeyPassword])
+	if password.IsZero() {
 		pvc := &corev1.PersistentVolumeClaim{}
 		pvc.Name = dbcontroller.InternalPVCName(provider.Name)
 		pvc.Namespace = existing.Namespace
@@ -388,7 +389,7 @@ func computeInternalAdminSecret(
 			return res, fmt.Errorf("generating admin password: %w", err)
 		}
 
-		password = []byte(pwd)
+		password = pwd
 	}
 
 	instanceHash := existing.Annotations[dbcontroller.InternalAdminSecretKeyAnnotation]
@@ -408,7 +409,7 @@ func computeInternalAdminSecret(
 func desiredInternalAdminSecret(
 	provider *infraApi.DatabaseProvider,
 	cfg *moduleconfig.Config,
-	password []byte,
+	password secretvalue.SecretString,
 	tlsState TLSState,
 ) *corev1.Secret {
 	return pginstance.AdminSecret(

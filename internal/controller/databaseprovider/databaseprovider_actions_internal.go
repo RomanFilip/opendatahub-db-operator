@@ -219,12 +219,13 @@ func (m *Controller) internalReadinessAction(
 			conditions.WithMessagef("Loading internal admin Secret: %s", err))
 		return nil
 	}
+	cfg = m.cfg.WithPostgresTracing(cfg)
 	if err := m.probeInternalAdminConnection(ctx, cfg); err != nil {
 		markReachable(rr, obj, metav1.ConditionFalse,
 			conditions.WithReason("AdminConnectionFailed"),
 			conditions.WithMessagef(
 				"Internal PostgreSQL admin connection failed: %s. Verify the admin Secret, TLS, and network access.",
-				postgres.SanitizeError(err, cfg.Password),
+				err,
 			))
 		return nil
 	}

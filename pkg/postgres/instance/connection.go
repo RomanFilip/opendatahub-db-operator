@@ -7,6 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 const (
@@ -27,9 +28,11 @@ func adminDatabase(data Data) string {
 
 func AdminSecret(
 	data Data,
-	password []byte,
+	password secret.SecretString,
 	caData []byte,
 ) *corev1.Secret {
+	// The Kubernetes Secret write is an approved plaintext boundary.
+	plaintext := password.Reveal()
 	res := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      data.Postgres.AdminSecretName,
@@ -39,7 +42,7 @@ func AdminSecret(
 			postgres.SecretKeyHost:     []byte(Host(data)),
 			postgres.SecretKeyPort:     fmt.Appendf(nil, "%d", postgres.DefaultPort),
 			postgres.SecretKeyUser:     []byte(DefaultAdminUser),
-			postgres.SecretKeyPassword: append([]byte(nil), password...),
+			postgres.SecretKeyPassword: []byte(plaintext),
 			postgres.SecretKeyDatabase: []byte(adminDatabase(data)),
 		},
 	}

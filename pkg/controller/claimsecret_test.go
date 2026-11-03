@@ -24,6 +24,7 @@ import (
 
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 func TestApplyClaimCredentials_ADRContract(t *testing.T) {
@@ -35,7 +36,7 @@ func TestApplyClaimCredentials_ADRContract(t *testing.T) {
 		Port:        5432,
 		SSLMode:     "",
 		SSLRootCert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
-	}, "claim_role", "Abc123xyz", "analytics", "claim-uid")
+	}, "claim_role", secretvalue.FromString("Abc123xyz"), "analytics", "claim-uid")
 
 	g.Expect(secret.Annotations[controller.CredentialStampAnnotation]).NotTo(BeEmpty(),
 		"the credential stamp must be recorded for later tamper verification")
@@ -60,7 +61,7 @@ func TestApplySchemaClaimCredentials_AddsSchemaKey(t *testing.T) {
 	controller.ApplySchemaClaimCredentials(secret, postgres.Config{
 		Host: "db.example.svc",
 		Port: 5432,
-	}, "claim_role", "Abc123xyz", "analytics", "app_claim", "claim-uid")
+	}, "claim_role", secretvalue.FromString("Abc123xyz"), "analytics", "app_claim", "claim-uid")
 
 	g.Expect(string(secret.Data[postgres.SecretKeySchema])).To(Equal("app_claim"))
 	g.Expect(string(secret.Data[postgres.SecretKeyDatabase])).To(Equal("analytics"))

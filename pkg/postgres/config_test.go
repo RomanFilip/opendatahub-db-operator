@@ -18,6 +18,8 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,6 +27,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 // startPostgres starts an ephemeral Postgres container and returns the Config.
@@ -121,25 +124,135 @@ func TestParseAdminSecret_AllowsMissingDatabase(t *testing.T) {
 	g.Expect(cfg.DBName).To(BeEmpty())
 }
 
-func TestConfigDSN_EscapesSpecialCharacters(t *testing.T) {
+// TestParseSecret_DecodesPasswordIntoWrapper verifies the Secret's password
+// bytes land in the typed wrapper and stay readable through Reveal.
+func TestParseSecret_DecodesPasswordIntoWrapper(t *testing.T) {
+	g := NewWithT(t)
+
+	cfg, err := postgres.ParseSecret(map[string][]byte{
+		postgres.SecretKeyHost:     []byte("localhost"),
+		postgres.SecretKeyUser:     []byte("u"),
+		postgres.SecretKeyPassword: []byte("decoded-password"),
+		postgres.SecretKeyDatabase: []byte("d"),
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.Password.IsZero()).To(BeFalse())
+	g.Expect(cfg.Password.Reveal()).To(Equal("decoded-password"))
+}
+
+// TestConfig_FormattingRedactsPassword verifies each fmt verb applied to the
+// whole config renders the password as [REDACTED] while the rest of the struct
+// still prints.
+func TestConfig_FormattingRedactsPassword(t *testing.T) {
+	const password = "format-sentinel-password"
+
+	cfg := postgres.Config{
+		Host:     "db.example.test",
+		Port:     5432,
+		User:     "postgres",
+		Password: secret.FromString(password),
+		DBName:   "app-db",
+	}
+
+	formats := []struct {
+		name  string
+		print func(value any) string
+	}{
+		{name: "verb-v", print: func(value any) string { return fmt.Sprintf("%v", value) }},
+		{name: "verb-plus-v", print: func(value any) string { return fmt.Sprintf("%+v", value) }},
+		{name: "verb-sharp-v", print: func(value any) string { return fmt.Sprintf("%#v", value) }},
+		{name: "Sprint", print: func(value any) string { return fmt.Sprint(value) }},
+	}
+
+	for _, format := range formats {
+		t.Run(format.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			out := format.print(cfg)
+
+			g.Expect(out).To(ContainSubstring(cfg.Host))
+			g.Expect(out).To(ContainSubstring("[REDACTED]"))
+			g.Expect(out).NotTo(ContainSubstring(password))
+		})
+	}
+}
+
+// TestConfigDSN_OmitsPassword verifies the DSN carries no credential even
+// though the wrapper still holds the real value, and that the user component is
+// still escaped.
+func TestConfigDSN_OmitsPassword(t *testing.T) {
 	g := NewWithT(t)
 
 	cfg := postgres.Config{
 		Host:     "db.example.test",
 		Port:     5432,
 		User:     "user name",
-		Password: "pa ss:wo/rd?&=#",
+		Password: secret.FromString("pa ss:wo/rd?&=#"),
 		DBName:   "app-db",
 		SSLMode:  "disable",
 	}
 
-	parsed, err := pgxpool.ParseConfig(cfg.DSN())
+	dsn := cfg.DSN()
+
+	g.Expect(cfg.Password.Reveal()).To(Equal("pa ss:wo/rd?&=#"))
+	g.Expect(dsn).NotTo(ContainSubstring(cfg.Password.Reveal()))
+
+	dsnURL, err := url.Parse(dsn)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, hasPassword := dsnURL.User.Password()
+	g.Expect(hasPassword).To(BeFalse())
+
+	parsed, err := pgxpool.ParseConfig(dsn)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(parsed.ConnConfig.Host).To(Equal(cfg.Host))
 	g.Expect(parsed.ConnConfig.Port).To(Equal(uint16(cfg.Port)))
 	g.Expect(parsed.ConnConfig.User).To(Equal(cfg.User))
-	g.Expect(parsed.ConnConfig.Password).To(Equal(cfg.Password))
 	g.Expect(parsed.ConnConfig.Database).To(Equal(cfg.DBName))
+}
+
+// TestParseSecret_ValidationErrorOmitsPassword verifies a validation failure
+// names the offending key and never echoes a Secret value.
+func TestParseSecret_ValidationErrorOmitsPassword(t *testing.T) {
+	const password = "validation-sentinel-password"
+
+	cases := []struct {
+		name    string
+		data    map[string][]byte
+		wantKey string
+	}{
+		{
+			name: "missing-user",
+			data: map[string][]byte{
+				postgres.SecretKeyHost:     []byte("localhost"),
+				postgres.SecretKeyPassword: []byte(password),
+				postgres.SecretKeyDatabase: []byte("d"),
+			},
+			wantKey: postgres.SecretKeyUser,
+		},
+		{
+			name: "invalid-port",
+			data: map[string][]byte{
+				postgres.SecretKeyHost:     []byte("localhost"),
+				postgres.SecretKeyPort:     []byte("notanumber"),
+				postgres.SecretKeyUser:     []byte("u"),
+				postgres.SecretKeyPassword: []byte(password),
+				postgres.SecretKeyDatabase: []byte("d"),
+			},
+			wantKey: postgres.SecretKeyPort,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			_, err := postgres.ParseSecret(tc.data)
+
+			g.Expect(err).To(MatchError(ContainSubstring(tc.wantKey)))
+			g.Expect(err).NotTo(MatchError(ContainSubstring(password)))
+		})
+	}
 }
 
 // TestClientPing_Success tests a real connection against a testcontainers Postgres.
@@ -162,7 +275,7 @@ func TestClientPing_WrongPassword(t *testing.T) {
 	cfg := startPostgres(t)
 
 	bad := cfg
-	bad.Password = "totally-wrong-password-sentinel"
+	bad.Password = secret.FromString("totally-wrong-password-sentinel")
 
 	cli, err := postgres.NewClient(t.Context(), bad)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -170,6 +283,6 @@ func TestClientPing_WrongPassword(t *testing.T) {
 
 	err = cli.Ping(t.Context())
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err).NotTo(MatchError(ContainSubstring(bad.Password)),
+	g.Expect(err).NotTo(MatchError(ContainSubstring(bad.Password.Reveal())),
 		"error message must not contain the password literal")
 }

@@ -58,6 +58,9 @@ func run(cmd *cobra.Command, v *viper.Viper) error {
 	if err != nil {
 		return fmt.Errorf("building zap logger: %w", err)
 	}
+	// Components without a reconcile context (the pgx pool tracer) log through
+	// the config so they follow the configured encoder and level.
+	cfg.Logger = logger
 	ctrl.SetLogger(logger)
 
 	mgr, err := modulemgr.New(cmd.Context(), ctrl.GetConfigOrDie(), cfg)

@@ -204,13 +204,8 @@ func TestDatabaseServiceAggregatesProviderStatus(t *testing.T) {
 				Message:  "PostgreSQL 12.0 is outside the tested range (13 through 17); connections and claims remain allowed",
 			},
 		}
-		// The provider controller's own status writes race this update, so
-		// re-read and retry on conflict instead of failing the subtest.
-		g.Eventually(func(g Gomega) {
-			g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(provider), provider)).To(Succeed())
-			provider.Status.Conditions = outOfRange
-			g.Expect(cli.Status().Update(ctx, provider)).To(Succeed())
-		}).WithTimeout(time.Minute).Should(Succeed())
+		provider.Status.Conditions = outOfRange
+		updateProviderStatus(g, ctx, cli, provider)
 		triggerServiceReconcile(t, ctx, cli, service)
 
 		eventuallyService(t, ctx, cli, service, func(g Gomega, got *servicesv1alpha1.DatabaseService) {
@@ -251,7 +246,7 @@ func TestDatabaseServiceAggregatesProviderStatus(t *testing.T) {
 				Message:  "PostgreSQL 16.4 is within the tested range",
 			},
 		}
-		g.Expect(cli.Status().Update(ctx, provider)).To(Succeed())
+		updateProviderStatus(g, ctx, cli, provider)
 
 		eventuallyService(t, ctx, cli, service, func(g Gomega, got *servicesv1alpha1.DatabaseService) {
 			expectServerVersion(g, got, metav1.ConditionTrue, "ServerVersionsWithinTestedRange")
@@ -298,6 +293,26 @@ func TestDatabaseServiceAggregatesProviderStatus(t *testing.T) {
 			g.Expect(testutil.GatherAndCount(ctrlmetrics.Registry, "dbprovider_server_version_info")).To(Equal(0))
 		}).Should(Succeed())
 	})
+}
+
+func updateProviderStatus(
+	g Gomega,
+	ctx context.Context,
+	cli client.Client,
+	provider *infraApi.DatabaseProvider,
+) {
+	// The manager client is cached: the Get can return a stale resourceVersion
+	// right after a previous status write (the informer lags the API server),
+	// which makes Status().Update fail with a 409 conflict. Retry with a fresh
+	// Get only on conflict; any other failure is a real error and fails fast.
+	wantConditions := provider.Status.Conditions
+	g.Eventually(func(g Gomega) {
+		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(provider), provider)).To(Succeed())
+		provider.Status.Conditions = wantConditions
+		err := cli.Status().Update(ctx, provider)
+		g.Expect(apierrors.IsConflict(err)).To(BeFalse(), "informer cache lag should resolve within the retry window")
+		g.Expect(err).To(Succeed())
+	}).Should(Succeed())
 }
 
 func triggerServiceReconcile(

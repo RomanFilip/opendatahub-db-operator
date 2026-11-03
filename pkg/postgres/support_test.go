@@ -67,8 +67,9 @@ func TestGeneratePassword_LengthAndCharset(t *testing.T) {
 	for _, length := range []int{16, 24, 32} {
 		p, err := postgres.GeneratePassword(length)
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(p).To(HaveLen(length))
-		for _, c := range p {
+		pw := p.Reveal()
+		g.Expect(pw).To(HaveLen(length))
+		for _, c := range pw {
 			g.Expect(c).To(Or(
 				BeNumerically(">=", '0'), BeNumerically("<=", '9'),
 				BeNumerically(">=", 'a'), BeNumerically("<=", 'z'),
@@ -84,7 +85,7 @@ func TestGeneratePassword_IsRandom(t *testing.T) {
 	for range 20 {
 		p, err := postgres.GeneratePassword(24)
 		g.Expect(err).NotTo(HaveOccurred())
-		seen[p] = struct{}{}
+		seen[p.Reveal()] = struct{}{}
 	}
 	g.Expect(seen).To(HaveLen(20), "each generated password should be unique")
 }

@@ -20,7 +20,10 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"net"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -34,6 +37,7 @@ import (
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
+	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -214,20 +218,57 @@ func TestReconcileExternalActionReportsUnreachableWithoutReturningError(t *testi
 	g.Expect(ready.Status).NotTo(Equal(metav1.ConditionTrue))
 }
 
+// TestReconcileExternalActionConnectionRefusedRequeuesQuickly covers the retry
+// classification this path acts on: a refused connection must still requeue
+// quickly once the driver error is projected at the client boundary.
+func TestReconcileExternalActionConnectionRefusedRequeuesQuickly(t *testing.T) {
+	g := NewWithT(t)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	g.Expect(listener.Close()).To(Succeed())
+
+	secret := externalAdminSecret()
+	secret.Data[postgres.SecretKeyHost] = []byte("127.0.0.1")
+	secret.Data[postgres.SecretKeyPort] = []byte(strconv.Itoa(port))
+	secret.Data[postgres.SecretKeySSLMode] = []byte(postgres.SSLModeDisable)
+
+	provider := externalProvider()
+	rr := testRequest(t, testClient(t, secret), provider)
+	m := &Controller{}
+
+	err = m.reconcileExternalAction(context.Background(), rr)
+
+	var stop odherrors.StopError
+	g.Expect(errors.As(err, &stop)).To(BeTrue(), "a refused connection requeues instead of failing reconciliation")
+	g.Expect(stop.RequeueAfter()).To(Equal(time.Second))
+
+	reachable := conditions.FindStatusCondition(provider, ConditionReachable)
+	g.Expect(reachable.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(reachable.Message).To(ContainSubstring("connection refused"))
+	g.Expect(reachable.Message).NotTo(ContainSubstring(string(secret.Data[postgres.SecretKeyPassword])))
+}
+
 func TestReconcileExternalActionRedactsPasswordFromConnectionFailure(t *testing.T) {
 	g := NewWithT(t)
 	secret := externalAdminSecret()
 	cli := testClient(t, secret)
 	provider := externalProvider()
 	m := &Controller{Options: Options{PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) {
-		return &fakePostgresClient{pingErr: errors.New("authentication failed for password secret")}, nil
+		return &fakePostgresClient{pingErr: postgres.ProjectError(
+			"ping",
+			errors.New("authentication failed for password secret"),
+			secretvalue.FromBytes(secret.Data[postgres.SecretKeyPassword]),
+		)}, nil
 	}}}
 	rr := testRequest(t, cli, provider)
 
 	g.Expect(m.reconcileExternalAction(context.Background(), rr)).To(Succeed())
 	reachable := conditions.FindStatusCondition(provider, ConditionReachable)
 	g.Expect(reachable).NotTo(BeNil())
-	g.Expect(reachable.Message).To(ContainSubstring("[redacted]"))
+	g.Expect(reachable.Message).To(ContainSubstring("[REDACTED]"))
 	g.Expect(reachable.Message).NotTo(ContainSubstring(string(secret.Data[postgres.SecretKeyPassword])))
 }
 
@@ -509,8 +550,12 @@ func TestInternalReadinessRejectsUnusableAdminSecret(t *testing.T) {
 	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "internal"}, Spec: infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal, Internal: &infraApi.InternalProviderSpec{Namespace: "database-system"}}}
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"}, Status: appsv1.StatefulSetStatus{ReadyReplicas: pginstance.InternalPostgresReplicaCount}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "internal-admin", Namespace: "database-system"}, Data: map[string][]byte{postgres.SecretKeyHost: []byte("internal.database-system.svc"), postgres.SecretKeyPort: []byte("5432"), postgres.SecretKeyUser: []byte("postgres"), postgres.SecretKeyPassword: []byte("new-password"), postgres.SecretKeyDatabase: []byte("postgres")}}
-	m := &Controller{Options: Options{cfg: &moduleconfig.Config{}, PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) {
-		return &fakePostgresClient{pingErr: errors.New("authentication failed for new-password")}, nil
+	m := &Controller{Options: Options{cfg: &moduleconfig.Config{}, PostgresClientFactory: func(_ context.Context, cfg postgres.Config) (postgres.Client, error) {
+		return &fakePostgresClient{pingErr: postgres.ProjectError(
+			"ping",
+			errors.New("authentication failed for new-password"),
+			cfg.Password,
+		)}, nil
 	}}}
 	rr := testRequest(t, testClient(t, sts, secret), provider)
 	rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue)
@@ -518,7 +563,7 @@ func TestInternalReadinessRejectsUnusableAdminSecret(t *testing.T) {
 	reachable := conditions.FindStatusCondition(provider, ConditionReachable)
 	g.Expect(reachable.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(reachable.Reason).To(Equal("AdminConnectionFailed"))
-	g.Expect(reachable.Message).To(ContainSubstring("[redacted]"))
+	g.Expect(reachable.Message).To(ContainSubstring("[REDACTED]"))
 	g.Expect(reachable.Message).NotTo(ContainSubstring("new-password"))
 }
 
@@ -632,7 +677,7 @@ func (c *fakePostgresClient) Ping(context.Context) error {
 func (c *fakePostgresClient) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, nil
 }
-func (c *fakePostgresClient) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (c *fakePostgresClient) Query(context.Context, string, ...any) (postgres.Rows, error) {
 	return nil, errors.New("unexpected query")
 }
 func (c *fakePostgresClient) QueryRow(context.Context, string, ...any) (pgx.Row, error) {

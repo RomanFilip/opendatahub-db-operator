@@ -24,8 +24,11 @@ import (
 	"reflect"
 	"strconv"
 
+	"github.com/go-logr/logr"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 // Secret key names for connection parameters. Bare (undotted) keys rather than
@@ -68,17 +71,25 @@ const (
 // mapstructure tags match the SecretKey*
 // constants above. Schema and SSLMode are optional.
 type Config struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	User     string `mapstructure:"user"`
-	Password string `mapstructure:"password"`
-	DBName   string `mapstructure:"dbname"`
-	Schema   string `mapstructure:"schema"`
+	Host     string              `mapstructure:"host"`
+	Port     int                 `mapstructure:"port"`
+	User     string              `mapstructure:"user"`
+	Password secret.SecretString `mapstructure:"password"`
+	DBName   string              `mapstructure:"dbname"`
+	Schema   string              `mapstructure:"schema"`
 	// SSLRootCert stores PEM-encoded CA content from SecretKeyCA. Runtime
 	// helpers build the pgx TLS configuration directly from this content.
 	SSLRootCert      string            `mapstructure:"ca.crt"`
 	SSLMode          string            `mapstructure:"sslmode"`
 	TLSConfigMutator func(*tls.Config) `mapstructure:"-"`
+	// Logger receives this connection's pgx trace events. It never comes from a
+	// Secret: the controller layer copies it from the operator logger, and a
+	// zero Logger discards trace output.
+	Logger logr.Logger `mapstructure:"-"`
+	// TraceQueries promotes pgx trace output from database errors to every
+	// statement. The controller layer sets it from the operator log level, so a
+	// production operator does not log each statement it issues.
+	TraceQueries bool `mapstructure:"-"`
 }
 
 func (c Config) TLSEnabled() bool {
@@ -98,18 +109,20 @@ func (c Config) TLSReady() bool {
 	}
 }
 
+// secretField reports whether a required Secret key is absent without carrying
+// its value, so a validation error can name the key but never echo the value.
 type secretField struct {
-	value string
-	key   string
+	key     string
+	missing bool
 }
 
 func (c Config) validate(requireDatabase bool) error {
 	for _, field := range [...]secretField{
-		{c.Host, SecretKeyHost},
-		{c.User, SecretKeyUser},
-		{c.Password, SecretKeyPassword},
+		{SecretKeyHost, c.Host == ""},
+		{SecretKeyUser, c.User == ""},
+		{SecretKeyPassword, c.Password.IsZero()},
 	} {
-		if field.value == "" {
+		if field.missing {
 			return fmt.Errorf("missing or empty key %q in Secret", field.key)
 		}
 	}
@@ -134,10 +147,33 @@ func (c Config) ValidateWithoutDatabase() error {
 	return c.validate(false)
 }
 
+var (
+	bytesType        = reflect.TypeFor[[]byte]()
+	secretStringType = reflect.TypeFor[secret.SecretString]()
+)
+
+// decodeSecretValue builds the typed password wrapper straight from Secret
+// bytes, and otherwise promotes []byte -> string so that WeaklyTypedInput can
+// handle string -> int for PGPORT.
+func decodeSecretValue(from, to reflect.Type, v any) (any, error) {
+	if to == secretStringType {
+		switch value := v.(type) {
+		case []byte:
+			return secret.FromBytes(value), nil
+		case string:
+			return secret.FromString(value), nil
+		default:
+			return v, nil
+		}
+	}
+	if from == bytesType {
+		return string(v.([]byte)), nil
+	}
+	return v, nil
+}
+
 // ParseSecret decodes a Secret's data map ([]byte values) into a Config using
-// mapstructure. The inline hook promotes []byte -> string first so that
-// WeaklyTypedInput can then handle string -> int for PGPORT. PGPORT defaults to
-// DefaultPort when absent.
+// mapstructure. PGPORT defaults to DefaultPort when absent.
 func parseSecret(data map[string][]byte, requireDatabase bool) (Config, error) {
 	cfg := Config{Port: DefaultPort}
 
@@ -145,14 +181,7 @@ func parseSecret(data map[string][]byte, requireDatabase bool) (Config, error) {
 		Result:           &cfg,
 		WeaklyTypedInput: true, // converts string "5432" -> int
 		TagName:          "mapstructure",
-		DecodeHook: mapstructure.ComposeDecodeHookFunc(
-			func(f reflect.Type, _ reflect.Type, v any) (any, error) {
-				if f == reflect.TypeFor[[]byte]() {
-					return string(v.([]byte)), nil
-				}
-				return v, nil
-			},
-		),
+		DecodeHook:       decodeSecretValue,
 	})
 	if err != nil {
 		return cfg, fmt.Errorf("building decoder: %w", err)
@@ -196,13 +225,15 @@ func ConfigFromDSN(dsn string) (Config, error) {
 		Host:     pcfg.ConnConfig.Host,
 		Port:     int(pcfg.ConnConfig.Port),
 		User:     pcfg.ConnConfig.User,
-		Password: pcfg.ConnConfig.Password,
+		Password: secret.FromString(pcfg.ConnConfig.Password),
 		DBName:   pcfg.ConnConfig.Database,
 		SSLMode:  sslMode,
 	}, nil
 }
 
-// DSN returns the libpq-style connection string for the config.
+// DSN returns the libpq-style connection string for the config. It deliberately
+// carries no password; connection setup supplies the credential at the pgx
+// boundary instead.
 func (c Config) DSN() string {
 	q := url.Values{}
 	if c.SSLMode != "" {
@@ -210,7 +241,7 @@ func (c Config) DSN() string {
 	}
 	return (&url.URL{
 		Scheme:   "postgres",
-		User:     url.UserPassword(c.User, c.Password),
+		User:     url.User(c.User),
 		Host:     net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
 		Path:     c.DBName,
 		RawQuery: q.Encode(),

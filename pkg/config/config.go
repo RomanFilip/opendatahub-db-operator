@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
+	"github.com/go-logr/logr"
 	"github.com/go-viper/mapstructure/v2"
 	operatorversion "github.com/operator-framework/api/pkg/lib/version"
 	"github.com/spf13/viper"
@@ -169,6 +170,11 @@ type Config struct {
 	// release. DatabaseClaim cleanup does not use it: the finalizer stays
 	// until role (and optional DB) cleanup succeeds.
 	GracePeriod time.Duration `mapstructure:"grace-period"`
+	// Logger is the operator logger built from Zap at startup. It is set here
+	// so components that run outside a reconcile context, such as the pgx pool
+	// tracer, log through the configured encoder and level instead of a
+	// process-global logger.
+	Logger logr.Logger `mapstructure:"-"`
 }
 
 // RetryConfig holds one reconciler's periodic-retry interval, passed to

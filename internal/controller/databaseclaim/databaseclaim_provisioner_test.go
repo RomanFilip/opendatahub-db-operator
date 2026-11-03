@@ -39,6 +39,7 @@ import (
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 func TestEnsure_CreatesNamedDatabaseWhenAllowed(t *testing.T) {
@@ -235,7 +236,7 @@ func stampedCredentialsSecret(t *testing.T, claim *infraApi.DatabaseClaim, passw
 	t.Helper()
 	role := dbcontroller.RoleNameFor(claim.Namespace, claim.Name)
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: claim.Name, Namespace: claim.Namespace}}
-	dbcontroller.ApplyClaimCredentials(secret, providerConfig(), role, password, "analytics", claim.UID)
+	dbcontroller.ApplyClaimCredentials(secret, providerConfig(), role, secretvalue.FromString(password), "analytics", claim.UID)
 	return secret
 }
 
@@ -250,7 +251,7 @@ func TestEnsure_PreservesStampedPassword(t *testing.T) {
 		roles:     map[string]bool{role: true},
 	}
 	existing := credentialsSecretOwnedBy(t, claim.Name, claim.Namespace, claim)
-	dbcontroller.ApplyClaimCredentials(existing, providerConfig(), role, "original-pw", "analytics", claim.UID)
+	dbcontroller.ApplyClaimCredentials(existing, providerConfig(), role, secretvalue.FromString("original-pw"), "analytics", claim.UID)
 	cli := fakeClient(t, existing)
 
 	secret, err := databaseclaim.DatabaseProvisioner{
@@ -277,7 +278,7 @@ func TestEnsure_RotatesTamperedPassword(t *testing.T) {
 		roles:     map[string]bool{role: true},
 	}
 	existing := credentialsSecretOwnedBy(t, claim.Name, claim.Namespace, claim)
-	dbcontroller.ApplyClaimCredentials(existing, providerConfig(), role, "original-pw", "analytics", claim.UID)
+	dbcontroller.ApplyClaimCredentials(existing, providerConfig(), role, secretvalue.FromString("original-pw"), "analytics", claim.UID)
 	existing.Data[postgres.SecretKeyPassword] = []byte("tampered-pw")
 	cli := fakeClient(t, existing)
 
@@ -711,7 +712,7 @@ func (t *trackingClient) Exec(_ context.Context, sql string, _ ...any) (pgconn.C
 	return pgconn.CommandTag{}, nil
 }
 
-func (t *trackingClient) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (t *trackingClient) Query(context.Context, string, ...any) (postgres.Rows, error) {
 	return nil, fmt.Errorf("unexpected Query")
 }
 
