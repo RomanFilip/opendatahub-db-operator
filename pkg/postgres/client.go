@@ -26,13 +26,29 @@ import (
 )
 
 // Client owns a PostgreSQL connection and is the main way to interact with the database.
+//
+// Every error a Client returns is safe to put in a condition message, an Event,
+// or a log line: driver failures come back as *SafeError, which renders no
+// credential material while preserving SQLSTATE and retry classification.
 type Client interface {
 	Config() Config
 	Close()
 	Ping(ctx context.Context) error
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Query(ctx context.Context, sql string, args ...any) (Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) (pgx.Row, error)
+}
+
+// Rows exposes pgx query results without exposing the underlying connection.
+type Rows interface {
+	Close()
+	Err() error
+	CommandTag() pgconn.CommandTag
+	FieldDescriptions() []pgconn.FieldDescription
+	Next() bool
+	Scan(dest ...any) error
+	Values() ([]any, error)
+	RawValues() [][]byte
 }
 
 type pgxClient struct {
@@ -77,7 +93,7 @@ func (c *pgxClient) Ping(ctx context.Context) error {
 		return fmt.Errorf("postgres client is not open")
 	}
 
-	return sanitize(c.pool.Ping(ctx), c.config.Password)
+	return c.project(ctx, "ping", c.pool.Ping(ctx))
 }
 
 func (c *pgxClient) Exec(
@@ -89,19 +105,29 @@ func (c *pgxClient) Exec(
 		return pgconn.CommandTag{}, fmt.Errorf("postgres client is not open")
 	}
 
-	return c.pool.Exec(ctx, sql, args...)
+	tag, err := c.pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return pgconn.CommandTag{}, c.project(ctx, "executing statement", err)
+	}
+
+	return tag, nil
 }
 
 func (c *pgxClient) Query(
 	ctx context.Context,
 	sql string,
 	args ...any,
-) (pgx.Rows, error) {
+) (Rows, error) {
 	if c == nil || c.pool == nil {
 		return nil, fmt.Errorf("postgres client is not open")
 	}
 
-	return c.pool.Query(ctx, sql, args...)
+	rows, err := c.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, c.project(ctx, "starting query", err)
+	}
+
+	return safeRows{Rows: rows, secrets: c.boundarySecrets(ctx)}, nil
 }
 
 func (c *pgxClient) QueryRow(
@@ -113,18 +139,59 @@ func (c *pgxClient) QueryRow(
 		return nil, fmt.Errorf("postgres client is not open")
 	}
 
-	return c.pool.QueryRow(ctx, sql, args...), nil
+	return safeRow{row: c.pool.QueryRow(ctx, sql, args...), secrets: c.boundarySecrets(ctx)}, nil
+}
+
+// project converts a driver failure into the shape a Client returns, where the
+// raw error, the pool credential, and the statement-scoped secrets are all in
+// hand.
+func (c *pgxClient) project(ctx context.Context, operation string, err error) error {
+	return projectError(operation, err, c.boundarySecrets(ctx))
+}
+
+func (c *pgxClient) boundarySecrets(ctx context.Context) boundarySecrets {
+	return boundarySecrets{pool: c.config.Password, statement: querySecretsFrom(ctx)}
+}
+
+// safeRows projects the errors pgx reports after Query returns. Scan, Values,
+// and Err run once the statement's context is gone, so secrets are bound here.
+type safeRows struct {
+	Rows
+	secrets boundarySecrets
+}
+
+func (r safeRows) Scan(dest ...any) error {
+	return projectError("scanning row", r.Rows.Scan(dest...), r.secrets)
+}
+
+func (r safeRows) Err() error {
+	return projectError("reading rows", r.Rows.Err(), r.secrets)
+}
+
+func (r safeRows) Values() ([]any, error) {
+	values, err := r.Rows.Values()
+	return values, projectError("reading row values", err, r.secrets)
+}
+
+// safeRow projects the error QueryRow defers until Scan.
+type safeRow struct {
+	row     pgx.Row
+	secrets boundarySecrets
+}
+
+func (r safeRow) Scan(dest ...any) error {
+	return projectError("scanning row", r.row.Scan(dest...), r.secrets)
 }
 
 func openPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 	poolConfig, err := poolConfigFor(cfg)
 	if err != nil {
-		return nil, sanitize(fmt.Errorf("building pool config: %w", err), cfg.Password)
+		return nil, projectError("building pool config", err, boundarySecrets{pool: cfg.Password})
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		return nil, sanitize(fmt.Errorf("opening pool: %w", err), cfg.Password)
+		return nil, projectError("opening pool", err, boundarySecrets{pool: cfg.Password})
 	}
 
 	return pool, nil

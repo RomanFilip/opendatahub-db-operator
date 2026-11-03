@@ -23,6 +23,8 @@ import (
 	"github.com/go-logr/logr"
 	"go.uber.org/zap/zapcore"
 	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 )
 
 func (c ZapConfig) NewLogger() (logr.Logger, error) {
@@ -48,4 +50,24 @@ func (c ZapConfig) NewLogger() (logr.Logger, error) {
 	}
 
 	return ctrlzap.New(opts...), nil
+}
+
+// TraceQueries reports whether pgx should trace every database statement.
+// Statement-level output is the diagnostic detail debug level asks for; at the
+// default info level the operator traces database errors only.
+func (c ZapConfig) TraceQueries() bool {
+	level, err := zapcore.ParseLevel(c.Level)
+	return err == nil && level == zapcore.DebugLevel
+}
+
+// WithPostgresTracing returns poolCfg carrying the operator logger and the pgx
+// trace level derived from it, so every pool the operator opens logs through
+// the configured zap logger at the severity the configured level asks for.
+func (c *Config) WithPostgresTracing(poolCfg postgres.Config) postgres.Config {
+	if c == nil {
+		return poolCfg
+	}
+	poolCfg.Logger = c.Logger
+	poolCfg.TraceQueries = c.Controller.Zap.TraceQueries()
+	return poolCfg
 }

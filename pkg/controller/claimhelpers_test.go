@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	. "github.com/onsi/gomega"
@@ -22,6 +23,7 @@ import (
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 func TestNewClient_LoadsProviderConfigAndUsesFactory(t *testing.T) {
@@ -75,12 +77,39 @@ func TestNewClient_LoadsProviderConfigAndUsesFactory(t *testing.T) {
 		Host:     "postgres.db-admin.svc",
 		Port:     postgres.DefaultPort,
 		User:     "postgres",
-		Password: "secret",
+		Password: secretvalue.FromString("secret"),
 		DBName:   "postgres",
 		SSLMode:  postgres.SSLModeRequire,
 	}))
 	g.Expect(gotConfig).To(Equal(cfg))
 	g.Expect(client.Config()).To(Equal(cfg))
+}
+
+// TestOpenClient_KeepsProjectedFailureClassification covers the cleanup fallback
+// for a database that disappears mid-flight: the SQLSTATE must survive this
+// helper's wrapping, because that is what tells schemaclaim cleanup to treat the
+// database as already gone instead of failing the deletion.
+func TestOpenClient_KeepsProjectedFailureClassification(t *testing.T) {
+	g := NewWithT(t)
+
+	projected := postgres.ProjectError(
+		"ping",
+		&pgconn.PgError{Code: pgerrcode.InvalidCatalogName, Message: `database "analytics" does not exist`},
+		secretvalue.FromString("admin-password"),
+	)
+
+	_, err := controller.OpenClient(
+		context.Background(),
+		postgres.Config{DBName: "analytics"},
+		func(context.Context, postgres.Config) (postgres.Client, error) {
+			return nil, projected
+		},
+	)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(postgres.IsInvalidCatalogName(err)).To(BeTrue(), "the cleanup fallback depends on this")
+	g.Expect(err.Error()).To(ContainSubstring("analytics"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("admin-password"))
 }
 
 type stubClient struct {
@@ -93,7 +122,7 @@ func (stubClient) Ping(context.Context) error { return nil }
 func (stubClient) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, nil
 }
-func (stubClient) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (stubClient) Query(context.Context, string, ...any) (postgres.Rows, error) {
 	return nil, nil
 }
 func (stubClient) QueryRow(context.Context, string, ...any) (pgx.Row, error) {
@@ -233,7 +262,7 @@ func (c *recordingClient) Exec(_ context.Context, sql string, _ ...any) (pgconn.
 	c.execSQLs = append(c.execSQLs, sql)
 	return pgconn.CommandTag{}, nil
 }
-func (c *recordingClient) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (c *recordingClient) Query(context.Context, string, ...any) (postgres.Rows, error) {
 	return nil, nil
 }
 func (c *recordingClient) QueryRow(_ context.Context, _ string, args ...any) (pgx.Row, error) {

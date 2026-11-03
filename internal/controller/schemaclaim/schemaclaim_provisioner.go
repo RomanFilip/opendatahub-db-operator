@@ -30,6 +30,7 @@ import (
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
+	odhsecret "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 // SchemaProvisioner provisions a dedicated schema and login role for a SchemaClaim.
@@ -148,8 +149,8 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 		// Keep a verifiable password; rotate anything else. The stamp rules
 		// and the upgrade-migration trade-off are documented in
 		// DatabaseProvisioner.Ensure.
-		existingPassword := string(secret.Data[postgres.SecretKeyPassword])
-		if existingPassword == "" || (dbcontroller.HasCredentialStamp(secret) &&
+		existingPassword := odhsecret.FromBytes(secret.Data[postgres.SecretKeyPassword])
+		if existingPassword.IsZero() || (dbcontroller.HasCredentialStamp(secret) &&
 			!dbcontroller.CredentialStampMatches(secret, p.Claim.UID, role)) {
 			pw, genErr := postgres.GeneratePassword(24)
 			if genErr != nil {

@@ -28,6 +28,7 @@ import (
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
+	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 // CredentialStampAnnotation carries a hash of (claim UID, role, password)
@@ -71,7 +72,8 @@ func CredentialStampMatches(secret *corev1.Secret, claimUID types.UID, role stri
 	if !ok || stamp == "" {
 		return false
 	}
-	return stamp == credentialStamp(claimUID, role, string(secret.Data[postgres.SecretKeyPassword]))
+	return stamp == credentialStamp(claimUID, role,
+		secretvalue.FromBytes(secret.Data[postgres.SecretKeyPassword]).Reveal())
 }
 
 // ApplyClaimCredentials populates an Opaque postgres Connection Secret with the
@@ -81,15 +83,17 @@ func ApplyClaimCredentials(
 	secret *corev1.Secret,
 	cfg postgres.Config,
 	role string,
-	password string,
+	password secretvalue.SecretString,
 	database string,
 	claimUID types.UID,
 ) {
+	// The Kubernetes Secret write is an approved plaintext boundary.
+	plaintext := password.Reveal()
 	if secret.Annotations == nil {
 		secret.Annotations = map[string]string{}
 	}
 	secret.Annotations[postgres.AnnotationConnectionTypeProtocol] = postgres.ConnectionTypeProtocolPostgres
-	secret.Annotations[CredentialStampAnnotation] = credentialStamp(claimUID, role, password)
+	secret.Annotations[CredentialStampAnnotation] = credentialStamp(claimUID, role, plaintext)
 	secret.SetGroupVersionKind(gvk.Secret)
 	secret.Type = corev1.SecretTypeOpaque
 
@@ -102,7 +106,7 @@ func ApplyClaimCredentials(
 		postgres.SecretKeyHost:     []byte(cfg.Host),
 		postgres.SecretKeyPort:     []byte(strconv.Itoa(cfg.Port)),
 		postgres.SecretKeyUser:     []byte(role),
-		postgres.SecretKeyPassword: []byte(password),
+		postgres.SecretKeyPassword: []byte(plaintext),
 		postgres.SecretKeyDatabase: []byte(database),
 		postgres.SecretKeySSLMode:  []byte(sslmode),
 	}
@@ -115,7 +119,7 @@ func ApplySchemaClaimCredentials(
 	secret *corev1.Secret,
 	cfg postgres.Config,
 	role string,
-	password string,
+	password secretvalue.SecretString,
 	database string,
 	schema string,
 	claimUID types.UID,

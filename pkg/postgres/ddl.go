@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 // SQL statement templates. Each uses %s placeholders for already-quoted
@@ -198,10 +199,14 @@ func DropSchemaCascade(ctx context.Context, cli Client, schema string) error {
 // not already exist. It is a true CREATE-only idempotent operation — it never
 // alters an existing role's password. Use SetRolePassword for explicit rotation.
 // Concurrent creates that lose the race on DuplicateObject are treated as success.
-func EnsureRole(ctx context.Context, cli Client, role, password string) error {
+func EnsureRole(ctx context.Context, cli Client, role string, password secret.SecretString) error {
+	// The statement holds the password as a literal: the pool tracer redacts it
+	// from traces, and Client error projection redacts it from driver text that
+	// quotes the statement back.
+	ctx = withQuerySecrets(ctx, password)
 	stmt := fmt.Sprintf(sqlEnsureRole,
 		QuoteLiteral(role),
-		QuoteIdentifier(role), QuoteLiteral(password),
+		QuoteIdentifier(role), QuoteLiteral(password.Reveal()),
 	)
 	_, err := cli.Exec(ctx, stmt)
 	if err != nil && IsDuplicateObject(err) {
@@ -214,8 +219,10 @@ func EnsureRole(ctx context.Context, cli Client, role, password string) error {
 // Callers must ensure this is intentional — rotating breaks all active connections
 // that use the old credentials. Only call this when a credentials Secret has been
 // lost and an explicit rotation is required to restore a known-good state.
-func SetRolePassword(ctx context.Context, cli Client, role, password string) error {
-	_, err := cli.Exec(ctx, fmt.Sprintf(sqlSetRolePassword, QuoteIdentifier(role), QuoteLiteral(password)))
+func SetRolePassword(ctx context.Context, cli Client, role string, password secret.SecretString) error {
+	// Same two consumers as EnsureRole: trace rendering and error projection.
+	ctx = withQuerySecrets(ctx, password)
+	_, err := cli.Exec(ctx, fmt.Sprintf(sqlSetRolePassword, QuoteIdentifier(role), QuoteLiteral(password.Reveal())))
 	return err
 }
 

@@ -17,12 +17,11 @@ limitations under the License.
 package controller
 
 import (
-	"errors"
-	"net"
-	"syscall"
 	"time"
 
 	odherrors "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/errors"
+
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 )
 
 const connectionRefusedRetryAfter = time.Second
@@ -30,17 +29,17 @@ const connectionRefusedRetryAfter = time.Second
 // StopWithQuickRetryIfConnectionRefused returns a quick-requeue StopError when
 // err is a connection-refused failure, and nil otherwise.
 //
-// Detection walks the error chain with errors.As to find a *net.OpError whose
-// underlying syscall error is ECONNREFUSED. This is reliable across locales,
-// error-wrapping styles, and TLS stacks — unlike string matching on the error
-// message, which breaks for non-English systems or non-standard wrappers.
+// Detection asks the PostgreSQL boundary for the retry class it established
+// from the raw driver error, because a Client never returns the *net.OpError
+// chain that classification needs — it returns the projected SafeError that
+// carries the class. Errors that never crossed that boundary are classified
+// from their own chain.
 func StopWithQuickRetryIfConnectionRefused(err error) error {
 	if err == nil {
 		return nil
 	}
 
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && errors.Is(opErr.Err, syscall.ECONNREFUSED) {
+	if postgres.RetryClassOf(err) == postgres.RetryQuick {
 		return odherrors.NewStopErrorW(err).WithRequeueAfter(connectionRefusedRetryAfter)
 	}
 

@@ -28,6 +28,7 @@ import (
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
+	odhsecret "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 // DatabaseProvisioner provisions database-scoped credentials for a DatabaseClaim.
@@ -157,8 +158,8 @@ func (p DatabaseProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error)
 		// password — deleting the Secret heals that by rotation. The stamp
 		// checks Secret-content consistency only; it cannot detect the
 		// role's password changing out-of-band in PostgreSQL.
-		existingPassword := string(secret.Data[postgres.SecretKeyPassword])
-		if existingPassword == "" || (dbcontroller.HasCredentialStamp(secret) &&
+		existingPassword := odhsecret.FromBytes(secret.Data[postgres.SecretKeyPassword])
+		if existingPassword.IsZero() || (dbcontroller.HasCredentialStamp(secret) &&
 			!dbcontroller.CredentialStampMatches(secret, p.Claim.UID, role)) {
 			pw, genErr := postgres.GeneratePassword(24)
 			if genErr != nil {

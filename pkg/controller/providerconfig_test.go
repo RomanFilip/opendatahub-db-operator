@@ -30,6 +30,7 @@ import (
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 func providerConfigScheme() *runtime.Scheme {
@@ -84,7 +85,7 @@ func TestLoadProviderConfig_InternalUsesGeneratedAdminSecret(t *testing.T) {
 		Host:     "sample-embedded.opendatahub-db.svc",
 		Port:     postgres.DefaultPort,
 		User:     "postgres",
-		Password: "postgres",
+		Password: secretvalue.FromString("postgres"),
 		DBName:   "postgres",
 		SSLMode:  "disable",
 	}))
@@ -168,7 +169,7 @@ func TestLoadProviderConfig_ExternalUsesConnectionSecretRef(t *testing.T) {
 		Host:     "postgres.db-admin.svc",
 		Port:     postgres.DefaultPort,
 		User:     "postgres",
-		Password: "secret",
+		Password: secretvalue.FromString("secret"),
 		DBName:   "postgres",
 		SSLMode:  "require",
 	}))

@@ -22,6 +22,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lib/pq"
+
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
 
 // QuoteIdentifier returns the identifier safely quoted for use inside a DDL
@@ -39,16 +41,17 @@ func QuoteLiteral(value string) string {
 const passwordChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 // GeneratePassword generates a cryptographically random password of the given
-// length using an alphanumeric character set.
-func GeneratePassword(length int) (string, error) {
+// length using an alphanumeric character set. The password stays wrapped so it
+// never exists as a plaintext string before an approved boundary.
+func GeneratePassword(length int) (secret.SecretString, error) {
 	chars := make([]byte, length)
 	maxInt := big.NewInt(int64(len(passwordChars)))
 	for i := range chars {
 		n, err := rand.Int(rand.Reader, maxInt)
 		if err != nil {
-			return "", err
+			return secret.SecretString{}, err
 		}
 		chars[i] = passwordChars[n.Int64()]
 	}
-	return string(chars), nil
+	return secret.FromBytes(chars), nil
 }

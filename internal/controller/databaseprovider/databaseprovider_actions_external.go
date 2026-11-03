@@ -47,14 +47,15 @@ func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.R
 		reportExternalConfigFailure(rr, obj, err)
 		return nil
 	}
+	cfg = m.cfg.WithPostgresTracing(cfg)
 	obj.Status.Connection = providerConnectionStatus(cfg)
 	obj.Status.TLS = &infraApi.ProviderTLSStatus{Enabled: cfg.TLSEnabled(), Ready: cfg.TLSReady()}
 	if err := configureExternalTLS(ctx, rr, &cfg); err != nil {
-		return m.markConnectionFailure(rr, obj, cfg, err)
+		return m.markConnectionFailure(rr, obj, err)
 	}
 	version, err := m.detectExternalServerVersion(ctx, cfg)
 	if err != nil {
-		return m.markConnectionFailure(rr, obj, cfg, err)
+		return m.markConnectionFailure(rr, obj, err)
 	}
 	reportExternalServerVersion(rr, obj, version)
 	markReachable(rr, obj, metav1.ConditionTrue, conditions.WithReason("ConnectionVerified"), conditions.WithMessage("Connection verified"))
@@ -139,13 +140,14 @@ func reportExternalServerVersion(rr *odhtypes.ReconciliationRequest, obj *infraA
 	}
 }
 
+// markConnectionFailure reports a failed connection probe on the provider and
+// requeues quickly when PostgreSQL refused the connection. err already carries
+// the safe projection a Client returns, so no text here needs scrubbing.
 func (m *Controller) markConnectionFailure(
 	rr *odhtypes.ReconciliationRequest,
 	obj *infraApi.DatabaseProvider,
-	cfg postgres.Config,
 	err error,
 ) error {
-	err = postgres.SanitizeError(err, cfg.Password)
 	obj.Status.ServerVersion = ""
 	dbmetrics.ClearProviderServerVersion(obj.Name)
 	rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionUnknown,

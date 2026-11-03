@@ -82,7 +82,7 @@ func (f *fakePostgres) Exec(_ context.Context, sql string, _ ...any) (pgconn.Com
 	return pgconn.CommandTag{}, nil
 }
 
-func (f *fakePostgres) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (f *fakePostgres) Query(context.Context, string, ...any) (postgres.Rows, error) {
 	return nil, fmt.Errorf("unexpected Query")
 }
 
