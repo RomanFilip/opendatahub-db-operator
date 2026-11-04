@@ -14,4 +14,20 @@ const (
 	ReasonTLSNotEnabled   = "TLSNotEnabled"
 	ReasonTLSProvisioning = "TLSProvisioning"
 	ReasonTLSConfigured   = "TLSConfigured"
+
+	// Claim Provisioned reasons: shared by claim controllers (when marking)
+	// and DatabaseService aggregation (when matching corrective actions).
+	ReasonProviderNotFound         = "ProviderNotFound"
+	ReasonProviderBound            = "ProviderBound"
+	ReasonProviderNotReady         = "ProviderNotReady"
+	ReasonDatabaseNotFound         = "DatabaseNotFound"
+	ReasonDatabaseCreateNotAllowed = "DatabaseCreateNotAllowed"
+	ReasonSchemaCreateNotAllowed   = "SchemaCreateNotAllowed"
+	ReasonSchemaReserved           = "SchemaReserved"
+	ReasonSchemaNotOwned           = "SchemaNotOwned"
+	ReasonSecretNotOwned           = "SecretNotOwned"
+	ReasonExtensionNotAvailable    = "ExtensionNotAvailable"
+	ReasonExtensionNotSupported    = "ExtensionNotSupported"
+	ReasonUserProvisioned          = "UserProvisioned"
+	ReasonSchemaProvisioned        = "SchemaProvisioned"
 )

@@ -111,6 +111,10 @@ func NewReconciler(
 		WithFinalizer(m.cleanupDefaultProvider).
 		WithAction(m.reportStatus).
 		WithAction(m.ensureDefaultProvider).
+		// Ready tracks module infrastructure (providers + default-provider
+		// management). ClaimHealth stays on status and Degraded so tenant
+		// claim bind failures are visible without taking the module out of
+		// Ready for every other consumer.
 		WithConditions(conditions.Dependent(fwapi.ConditionType(ConditionProviderHealth), conditions.HealthyWhenTrue)).
 		WithConditions(conditions.Dependent(conditionDefaultProviderReady, conditions.HealthyWhenTrue)).
 		Build(ctx)
