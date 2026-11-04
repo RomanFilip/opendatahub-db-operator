@@ -45,6 +45,12 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: ## Generate the manager ClusterRole and CRDs.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	# Sync the embedded operand manifests with the generated CRD bases; the
+	# operands sync test fails when this step is skipped.
+	cp config/crd/bases/infrastructure.opendatahub.io_databaseclaims.yaml \
+		config/crd/bases/infrastructure.opendatahub.io_databaseproviders.yaml \
+		config/crd/bases/infrastructure.opendatahub.io_schemaclaims.yaml \
+		internal/controller/databaseservice/operands/manifests/
 
 .PHONY: generate
 generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
