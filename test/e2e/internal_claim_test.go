@@ -23,6 +23,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	infraapi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
@@ -94,6 +95,13 @@ func TestInternalProviderClaimLifecycle(t *testing.T) {
 		condition := conditions.FindStatusCondition(current, "Reachable")
 		g.Expect(condition).NotTo(BeNil())
 		g.Expect(condition.Status).To(Equal(metav1.ConditionTrue), "%s", condition.Message)
+		limit := conditions.FindStatusCondition(current, infraapi.ConditionOperationalLimitations)
+		g.Expect(limit).NotTo(BeNil())
+		g.Expect(limit.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(limit.Severity).To(Equal(fwapi.ConditionSeverityInfo))
+		ready := conditions.FindStatusCondition(current, "Ready")
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(current.Status.Connection.Host).NotTo(BeEmpty())
 		g.Expect(current.Status.TLS).NotTo(BeNil())
 		g.Expect(current.Status.TLS.Enabled).To(Equal(tlsEnabled))

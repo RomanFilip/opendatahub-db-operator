@@ -30,6 +30,9 @@ const (
 
 	DatabaseProviderResource = "databaseproviders"
 	DatabaseProviderCRDName  = DatabaseProviderResource + "." + GroupName
+
+	// ConditionOperationalLimitations reports the fixed operational limits of an Internal provider.
+	ConditionOperationalLimitations = "OperationalLimitations"
 )
 
 // Compile-time interface assertion -- required because DatabaseProvider is

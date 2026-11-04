@@ -156,9 +156,18 @@ Check provider and claim conditions with `oc get databaseproviders` and
 `oc get databaseclaims -A`. The claim's `Provisioned` condition reports whether credentials are
 ready for the application.
 
-The Internal provider is a single PostgreSQL instance without high availability or automated backup
-and restore. External providers remain the administrator's responsibility. Claims retain database
-data when deleted by default, and the operator does not provide automated credential rotation. See
+Internal providers report `OperationalLimitations=True` with `Info` severity in their conditions.
+This condition describes the single-instance design and lack of high availability and automated
+backup and restore; it does not affect provider readiness or claim provisioning. Choose an
+appropriately managed External provider when those capabilities are required.
+
+Inspect the condition and its message with `oc get databaseprovider rhai-db -o yaml`. Dashboards
+and automation can display it as administrator guidance; use `Ready` and `Reachable` for health
+decisions. Go clients can identify it with
+[`ConditionOperationalLimitations`](../api/infrastructure/v1alpha1/databaseprovider_types.go).
+
+External providers remain the administrator's responsibility. Claims retain database data when
+deleted by default, and the operator does not provide automated credential rotation. See
 [architecture](../ARCHITECTURE.md#provider-backends) for the operational boundaries.
 
 ## Support and contributing
