@@ -48,6 +48,10 @@ func (m *Controller) reconcileInternalAction(
 	if obj.Spec.Type != infraApi.ProviderTypeInternal {
 		return nil
 	}
+	rr.Conditions.Mark(infraApi.ConditionOperationalLimitations, metav1.ConditionTrue,
+		conditions.WithSeverity(api.ConditionSeverityInfo),
+		conditions.WithReason("SingleInstanceWithoutBackup"),
+		conditions.WithMessage("The Internal provider is a single PostgreSQL instance without high availability or automated backup and restore. Use an appropriately managed External provider when those capabilities are required."))
 	if internalTLSEnabled(obj) {
 		available, err := dbcontroller.CertManagerAvailable(ctx, rr.Client)
 		if err != nil {

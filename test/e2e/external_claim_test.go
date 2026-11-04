@@ -97,6 +97,7 @@ func TestExternalProviderClaimLifecycle(t *testing.T) {
 		condition := conditions.FindStatusCondition(current, "Reachable")
 		g.Expect(condition).NotTo(BeNil())
 		g.Expect(condition.Status).To(Equal(metav1.ConditionTrue), "%s", condition.Message)
+		g.Expect(conditions.FindStatusCondition(current, infraapi.ConditionOperationalLimitations)).To(BeNil())
 		g.Expect(current.Status.TLS).NotTo(BeNil())
 		g.Expect(current.Status.TLS.Ready).To(BeTrue())
 	}).WithTimeout(2*time.Minute).Should(Succeed(), "external provider did not become reachable")

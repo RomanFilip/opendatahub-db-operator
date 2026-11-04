@@ -72,6 +72,55 @@ func TestReconcileExternalActionReportsUnavailableSecret(t *testing.T) {
 	ready := conditions.FindStatusCondition(provider, string(fwapi.ConditionTypeReady))
 	g.Expect(ready).NotTo(BeNil())
 	g.Expect(ready.Status).NotTo(Equal(metav1.ConditionTrue))
+	g.Expect(conditions.FindStatusCondition(provider, infraApi.ConditionOperationalLimitations)).To(BeNil())
+}
+
+func TestReconcileInternalActionReportsOperationalLimitationsBeforeSetup(t *testing.T) {
+	g := NewWithT(t)
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeInternal,
+			Internal: &infraApi.InternalProviderSpec{
+				TLS: &infraApi.InternalProviderTLSSpec{},
+			},
+		},
+	}
+	rr := testRequest(t, testClient(t), provider)
+	m := &Controller{Options: Options{cfg: &moduleconfig.Config{}}}
+
+	g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
+	limit := conditions.FindStatusCondition(provider, infraApi.ConditionOperationalLimitations)
+	g.Expect(limit).NotTo(BeNil())
+	g.Expect(limit.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(limit.Severity).To(Equal(fwapi.ConditionSeverityInfo))
+	g.Expect(limit.Reason).To(Equal("SingleInstanceWithoutBackup"))
+	g.Expect(limit.Message).To(Equal("The Internal provider is a single PostgreSQL instance without high availability or automated backup and restore. Use an appropriately managed External provider when those capabilities are required."))
+	g.Expect(conditions.FindStatusCondition(provider, string(fwapi.ConditionTypeReady)).Status).NotTo(Equal(metav1.ConditionTrue))
+
+	transition := limit.LastTransitionTime
+	g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
+	g.Expect(conditions.FindStatusCondition(provider, infraApi.ConditionOperationalLimitations).LastTransitionTime).To(Equal(transition))
+}
+
+func TestInternalOperationalLimitationsDoNotBlockReadiness(t *testing.T) {
+	g := NewWithT(t)
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeInternal,
+			Internal: &infraApi.InternalProviderSpec{
+				Storage: infraApi.StorageSpec{Size: resource.MustParse("1Gi")},
+			},
+		},
+	}
+	rr := testRequest(t, testClient(t), provider)
+	m := &Controller{Options: Options{cfg: &moduleconfig.Config{PostgresImage: moduleconfig.DefaultInternalPostgresImage}}}
+
+	g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
+	g.Expect(conditions.FindStatusCondition(provider, infraApi.ConditionOperationalLimitations).Status).To(Equal(metav1.ConditionTrue))
+	markReachable(rr, provider, metav1.ConditionTrue, conditions.WithReason(reasonInstanceRunning))
+	g.Expect(conditions.FindStatusCondition(provider, string(fwapi.ConditionTypeReady)).Status).To(Equal(metav1.ConditionTrue))
 }
 
 func TestReconcileExternalActionReportsInvalidSecretWithoutReturningError(t *testing.T) {
