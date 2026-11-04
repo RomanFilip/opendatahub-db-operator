@@ -41,10 +41,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
+	dbmetrics "github.com/opendatahub-io/opendatahub-db-operator/pkg/metrics"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 	secretvalue "github.com/opendatahub-io/opendatahub-db-operator/pkg/secret"
 )
@@ -212,6 +216,8 @@ func TestProvisionAction_ExtensionNotAvailable(t *testing.T) {
 		},
 	}}
 
+	t.Cleanup(func() { dbmetrics.PruneClaimMetrics(nil) })
+	dbmetrics.PruneClaimMetrics(nil)
 	err := m.provisionAction(context.Background(), claimTestRequest(t, cli, claim))
 	g.Expect(err).To(HaveOccurred())
 	var stop odherrors.StopError
@@ -226,6 +232,11 @@ func TestProvisionAction_ExtensionNotAvailable(t *testing.T) {
 	g.Expect(provisioned.Reason).To(Equal("ExtensionNotAvailable"))
 	g.Expect(provisioned.Message).To(ContainSubstring("vector"))
 	g.Expect(pg.execSQLsContainingCreateExtension()).To(BeFalse())
+	g.Expect(testutil.GatherAndCompare(ctrlmetrics.Registry, strings.NewReader(`
+# HELP dbclaim_provisioned Whether a DatabaseClaim or SchemaClaim is provisioned
+# TYPE dbclaim_provisioned gauge
+dbclaim_provisioned{kind="DatabaseClaim",name="analytics",namespace="app"} 0
+`), "dbclaim_provisioned")).To(Succeed())
 }
 
 func TestProvisionAction_UnsupportedExtensionNeverOpensPostgres(t *testing.T) {
@@ -330,6 +341,10 @@ func TestCleanupAction_DeletesCredentialsSecret(t *testing.T) {
 	credSecret := ownedCredentialsSecret(t, claim)
 	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
 
+	t.Cleanup(func() { dbmetrics.PruneClaimMetrics(nil) })
+	dbmetrics.PruneClaimMetrics(nil)
+	dbmetrics.SetClaimProvisioned(infraApi.DatabaseClaimKind, claim.Namespace, claim.Name, true)
+
 	err := newCleanupController(&cleanupPG{databases: map[string]bool{"analytics": true}}).cleanupAction(
 		context.Background(),
 		claimTestRequest(t, cli, claim),
@@ -340,6 +355,7 @@ func TestCleanupAction_DeletesCredentialsSecret(t *testing.T) {
 	err = cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
+	g.Expect(testutil.GatherAndCount(ctrlmetrics.Registry, "dbclaim_provisioned")).To(Equal(0))
 }
 
 func TestCleanupAction_EmptyProviderStillDeletesCredentialsSecret(t *testing.T) {
@@ -348,6 +364,10 @@ func TestCleanupAction_EmptyProviderStillDeletesCredentialsSecret(t *testing.T) 
 	claim.Status.Provider = ""
 	credSecret := ownedCredentialsSecret(t, claim)
 	cli := fakeCleanupClient(t, claim, credSecret)
+
+	t.Cleanup(func() { dbmetrics.PruneClaimMetrics(nil) })
+	dbmetrics.PruneClaimMetrics(nil)
+	dbmetrics.SetClaimProvisioned(infraApi.DatabaseClaimKind, claim.Namespace, claim.Name, false)
 
 	err := newCleanupController(&cleanupPG{}).cleanupAction(
 		context.Background(),
@@ -358,6 +378,7 @@ func TestCleanupAction_EmptyProviderStillDeletesCredentialsSecret(t *testing.T) 
 	got := &corev1.Secret{}
 	err = cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
+	g.Expect(testutil.GatherAndCount(ctrlmetrics.Registry, "dbclaim_provisioned")).To(Equal(0))
 }
 
 func TestCleanupAction_DeletesStampedSecretWithStrippedOwnerRef(t *testing.T) {

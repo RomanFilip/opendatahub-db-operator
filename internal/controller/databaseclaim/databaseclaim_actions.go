@@ -36,6 +36,7 @@ import (
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
+	dbmetrics "github.com/opendatahub-io/opendatahub-db-operator/pkg/metrics"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 )
 
@@ -52,11 +53,11 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 	provider, err := dbcontroller.ResolveForCurrentOrDefault(ctx, rr.Client, obj.Spec.Provider, obj.Status.Provider)
 	if err != nil {
 		if notFound, ok := errors.AsType[dbcontroller.ErrNotFound](err); ok {
-			rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
+			dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
 				conditions.WithError(notFound),
-				conditions.WithReason("ProviderNotFound"))
+				conditions.WithReason(dbcontroller.ReasonProviderNotFound))
 			rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionUnknown,
-				conditions.WithReason("ProviderNotFound"),
+				conditions.WithReason(dbcontroller.ReasonProviderNotFound),
 				conditions.WithMessage(notFound.Error()))
 			return odherrors.NewStopErrorW(err).WithRequeueAfter(m.retryInterval())
 		}
@@ -69,11 +70,11 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 	// provider and drop the finalizer without DropRole.
 	if obj.Status.Provider != provider.Name {
 		obj.Status.Provider = provider.Name
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
-			conditions.WithReason("ProviderBound"),
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
+			conditions.WithReason(dbcontroller.ReasonProviderBound),
 			conditions.WithMessage(fmt.Sprintf("bound to DatabaseProvider %q; provisioning on next reconcile", provider.Name)))
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionUnknown,
-			conditions.WithReason("ProviderBound"),
+			conditions.WithReason(dbcontroller.ReasonProviderBound),
 			conditions.WithMessage(fmt.Sprintf("waiting to provision against DatabaseProvider %q", provider.Name)))
 		return odherrors.NewStopErrorW(fmt.Errorf("persisted provider binding %q", provider.Name)).
 			WithRequeueAfter(providerBindingRequeueAfter)
@@ -84,11 +85,11 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 	}
 
 	if !dbcontroller.ProviderReachable(provider.GetConditions()) {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
-			conditions.WithReason("ProviderNotReady"),
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
+			conditions.WithReason(dbcontroller.ReasonProviderNotReady),
 			conditions.WithMessage(fmt.Sprintf("DatabaseProvider %q is not Reachable", provider.Name)))
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionUnknown,
-			conditions.WithReason("ProviderNotReady"),
+			conditions.WithReason(dbcontroller.ReasonProviderNotReady),
 			conditions.WithMessage(fmt.Sprintf("waiting for DatabaseProvider %q to become Reachable", provider.Name)))
 		return odherrors.NewStopErrorW(fmt.Errorf("provider %q not reachable", provider.Name)).
 			WithRequeueAfter(m.retryInterval())
@@ -102,7 +103,7 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 		m.PostgresClientFactory,
 	)
 	if err != nil {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
 			conditions.WithError(err))
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionUnknown,
 			conditions.WithReason(dbcontroller.ReasonTLSProvisioning),
@@ -126,21 +127,21 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 	}
 	secret, err := provisioner.Ensure(ctx)
 	if notFound, ok := errors.AsType[claimerrors.DatabaseNotFound](err); ok {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
-			conditions.WithReason("DatabaseNotFound"),
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
+			conditions.WithReason(dbcontroller.ReasonDatabaseNotFound),
 			conditions.WithMessage(fmt.Sprintf("database %q does not exist on provider %q", notFound.Database, provider.Name)))
 		return odherrors.NewStopErrorW(notFound).WithRequeueAfter(m.retryInterval())
 	}
 	if denied, ok := errors.AsType[claimerrors.DatabaseCreateNotAllowed](err); ok {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
-			conditions.WithReason("DatabaseCreateNotAllowed"),
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
+			conditions.WithReason(dbcontroller.ReasonDatabaseCreateNotAllowed),
 			conditions.WithMessage(denied.Error()))
 		// Terminal policy denial: do not polite-requeue; wait for a claim/provider change.
 		return odherrors.NewStopErrorW(denied)
 	}
 	if secretNotOwned, ok := errors.AsType[claimerrors.SecretNotOwned](err); ok {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
-			conditions.WithReason("SecretNotOwned"),
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
+			conditions.WithReason(dbcontroller.ReasonSecretNotOwned),
 			conditions.WithMessage(secretNotOwned.Error()))
 		// Terminal policy denial: no polite requeue. Recovery happens on
 		// the next periodic reconcile once the colliding Secret is removed —
@@ -149,14 +150,14 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 		return odherrors.NewStopErrorW(secretNotOwned)
 	}
 	if missingExt, ok := errors.AsType[claimerrors.ExtensionNotAvailable](err); ok {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
-			conditions.WithReason("ExtensionNotAvailable"),
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
+			conditions.WithReason(dbcontroller.ReasonExtensionNotAvailable),
 			conditions.WithMessage(missingExt.Error()))
 		// Out-of-band install in the target DB; requeue like DatabaseNotFound.
 		return odherrors.NewStopErrorW(missingExt).WithRequeueAfter(m.retryInterval())
 	}
 	if err != nil {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
+		dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionFalse,
 			conditions.WithError(err))
 		return err
 	}
@@ -175,8 +176,8 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 	connection := provisioner.ConnectionStatus()
 	obj.Status.Database = connection.Database
 	obj.Status.Connection = connection
-	rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionTrue,
-		conditions.WithReason("UserProvisioned"),
+	dbcontroller.MarkClaimProvisioned(rr, metav1.ConditionTrue,
+		conditions.WithReason(dbcontroller.ReasonUserProvisioned),
 		conditions.WithMessage(fmt.Sprintf("User provisioned on database %q (provider %q)", connection.Database, provider.Name)))
 	markTLS(rr, pgClient.Config())
 
@@ -206,6 +207,10 @@ func (m *Controller) cleanupAction(ctx context.Context, rr *odhtypes.Reconciliat
 	if !ok {
 		return fmt.Errorf("instance is not a DatabaseClaim")
 	}
+
+	// Drop the series as soon as cleanup starts so metrics follow claim
+	// deletion even when DatabaseService is absent and cannot prune.
+	dbmetrics.DeleteClaimProvisioned(infraApi.DatabaseClaimKind, obj.Namespace, obj.Name)
 
 	role := dbcontroller.RoleNameFor(obj.Namespace, obj.Name)
 

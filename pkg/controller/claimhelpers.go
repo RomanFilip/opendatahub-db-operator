@@ -35,6 +35,7 @@ import (
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
+	dbmetrics "github.com/opendatahub-io/opendatahub-db-operator/pkg/metrics"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 )
 
@@ -186,13 +187,29 @@ func ValidateClaimExtensions(extensions []string) error {
 	return claimerrors.ExtensionNotSupported{Extensions: unsupported}
 }
 
+// MarkClaimProvisioned updates the Provisioned condition and the matching
+// dbclaim_provisioned gauge for DatabaseClaim and SchemaClaim instances.
+func MarkClaimProvisioned(
+	rr *odhtypes.ReconciliationRequest,
+	status metav1.ConditionStatus,
+	opts ...conditions.Option,
+) {
+	rr.Conditions.Mark(ConditionProvisioned, status, opts...)
+	switch obj := rr.Instance.(type) {
+	case *infraApi.DatabaseClaim:
+		dbmetrics.SetClaimProvisioned(infraApi.DatabaseClaimKind, obj.Namespace, obj.Name, status == metav1.ConditionTrue)
+	case *infraApi.SchemaClaim:
+		dbmetrics.SetClaimProvisioned(infraApi.SchemaClaimKind, obj.Namespace, obj.Name, status == metav1.ConditionTrue)
+	}
+}
+
 // StopIfUnsupportedClaimExtensions marks Provisioned false when extensions
 // are outside SupportedClaimExtensions and returns a StopError so claim
 // actions never open Postgres. Nil/empty or supported lists return nil.
 func StopIfUnsupportedClaimExtensions(rr *odhtypes.ReconciliationRequest, extensions []string) error {
 	if err := ValidateClaimExtensions(extensions); err != nil {
-		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
-			conditions.WithReason("ExtensionNotSupported"),
+		MarkClaimProvisioned(rr, metav1.ConditionFalse,
+			conditions.WithReason(ReasonExtensionNotSupported),
 			conditions.WithMessage(err.Error()))
 		return odherrors.NewStopErrorW(err)
 	}

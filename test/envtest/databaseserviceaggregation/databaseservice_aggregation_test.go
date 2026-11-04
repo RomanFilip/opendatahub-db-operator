@@ -35,13 +35,14 @@ import (
 )
 
 func TestDatabaseServiceAggregatesProviderStatus(t *testing.T) {
-	g := NewWithT(t)
-
 	ctrl.SetLogger(logr.Discard())
 
+	// Configure Gomega defaults before NewWithT so the bootstrap Eventually
+	// inherits the suite timeout (default 90s), not Gomega's 1s package default.
 	gomegaCfg := support.LoadGomegaConfig()
 	SetDefaultEventuallyTimeout(gomegaCfg.EventuallyTimeout)
 	SetDefaultEventuallyPollingInterval(gomegaCfg.EventuallyPollingInterval)
+	g := NewWithT(t)
 
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
