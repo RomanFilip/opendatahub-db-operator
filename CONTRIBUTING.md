@@ -10,7 +10,7 @@ Run Make targets from the repository root. Use `make help` for the target list. 
 
 ## Prerequisites
 
-See `go.mod` for the Go version and `.github/workflows/ci.yaml` for CI's Go and helper-tool installation steps.
+See `go.mod` for the Go version. Make targets install the pinned helper tools they need into `bin/` on demand; versions are defined once in the `Makefile` and used identically locally and in CI.
 
 ## Test environments
 
@@ -22,9 +22,9 @@ envtest packages and needs their environments.
 | Suite | Command | What it checks | Environment |
 | --- | --- | --- | --- |
 | Unit | `make test` | Go packages outside `test/integration`, `test/envtest`, and `test/e2e`. | No cluster. |
-| Envtest | `make test-envtest` | Reconciliation against a local Kubernetes API server and etcd. | No external cluster; requires `controller-gen`, `setup-envtest`, and its selected API server/etcd assets. |
+| Envtest | `make test-envtest` | Reconciliation against a local Kubernetes API server and etcd. | No external cluster; downloads its selected API server/etcd assets on demand. |
 | Integration | `make test-integration` | Operator behavior against the current kubeconfig cluster. | Dedicated test cluster and matching `TEST_INTEGRATION_CONTEXT`. |
-| End to end | `make test-e2e-providers` | Internal and External provider claim lifecycles on Kind. | Existing isolated Kind cluster, Kind, Helm, and Podman CLIs; the cert-manager profile and External provider administrator Secret described below. |
+| End to end | `make test-e2e-providers` | Internal and External provider claim lifecycles on Kind. | Existing isolated Kind cluster and Podman CLI; the cert-manager profile and External provider administrator Secret described below. |
 
 The [CI workflow](.github/workflows/ci.yaml) runs unit and envtest suites. The separate
 [E2E workflow](.github/workflows/e2e.yaml) runs both cert-manager profiles.
@@ -63,9 +63,9 @@ The suite needs exclusive use of the cluster-scoped `DatabaseService/default-db-
 not reuse or delete an existing instance.
 
 `make test-e2e-providers` requires the context `kind-$(KIND_CLUSTER)` and does not create the Kind
-cluster. Set `E2E_CERT_MANAGER_PROFILE=present` for a cluster with cert-manager, or `absent` for a
-cluster without it. Set up a disposable External PostgreSQL instance and its administrator Secret,
-then run the suite, for example:
+cluster (use `make kind-create` first). Set `E2E_CERT_MANAGER_PROFILE=present` for a cluster with
+cert-manager, or `absent` for a cluster without it. Set up a disposable External PostgreSQL instance
+and its administrator Secret, then run the suite, for example:
 
 ```sh
 bash test/e2e/scripts/setup-external-postgres.sh db-operator-dev

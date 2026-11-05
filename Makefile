@@ -14,27 +14,103 @@ CONTAINER_TOOL ?= podman
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
-## Tool Commands -- this repo's dev environment installs these on PATH at
-## pinned versions (see docs) rather than `go run`-ing a versioned module per
-## invocation. Override on the command line (e.g. `make lint GOLANGCI_LINT=...`)
-## to point at a different binary.
-CONTROLLER_GEN ?= controller-gen
-KUSTOMIZE      ?= kustomize
-GOLANGCI_LINT  ?= golangci-lint
-HELM           ?= helm
+## Tool Binaries -- installed into LOCALBIN at pinned versions so local and
+## CI toolchains match; override on the command line (e.g. `make lint
+## GOLANGCI_LINT=golangci-lint`) to use a binary from PATH instead.
+LOCALBIN ?= $(shell pwd)/bin
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+KUSTOMIZE      ?= $(LOCALBIN)/kustomize
+GOLANGCI_LINT  ?= $(LOCALBIN)/golangci-lint
+HELM           ?= $(LOCALBIN)/helm
+ENVTEST        ?= $(LOCALBIN)/setup-envtest
 KUBECTL        ?= kubectl
-KIND           ?= kind
-ENVTEST        ?= setup-envtest
+KIND           ?= $(LOCALBIN)/kind
+
+## Tool Versions
+CONTROLLER_GEN_VERSION ?= v0.17.0
+KUSTOMIZE_VERSION ?= v5.5.0
+GOLANGCI_LINT_VERSION ?= v2.6.0
+HELM_VERSION ?= v3.19.0
+SETUP_ENVTEST_VERSION ?= release-0.20
+KIND_VERSION ?= v0.33.0
+
+GO_VERSION ?= $(shell sed -n 's/^go //p' go.mod)
+
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+# go-install-tool 'go install's a pinned package and symlinks the version-stamped
+# binary to $(1), so bumping a version re-triggers installation.
+# $1 - target path with name of binary
+# $2 - package url which can be installed
+# $3 - specific version of package
+define go-install-tool
+@[ -f "$(1)-$(3)" ] || { \
+set -e; \
+package=$(2)@$(3) ;\
+echo "Downloading $${package}" ;\
+rm -f "$(1)" || true ;\
+GOTOOLCHAIN="go$(GO_VERSION)" GOBIN="$(LOCALBIN)" go install "$${package}" ;\
+mv "$(1)" "$(1)-$(3)" ;\
+} ;\
+[ "$$(readlink "$(1)")" = "$(1)-$(3)" ] || ln -sf "$(1)-$(3)" "$(1)"
+endef
+
+.PHONY: controller-gen
+controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
+$(CONTROLLER_GEN): $(LOCALBIN)
+	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_GEN_VERSION))
+
+.PHONY: kustomize
+kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
+$(KUSTOMIZE): $(LOCALBIN)
+	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
+
+.PHONY: golangci-lint
+golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
+$(GOLANGCI_LINT): $(LOCALBIN)
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: helm-tool
+helm-tool: $(HELM) ## Download helm locally if necessary.
+$(HELM): $(LOCALBIN)
+	$(call go-install-tool,$(HELM),helm.sh/helm/v3/cmd/helm,$(HELM_VERSION))
+
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
+
+.PHONY: kind-create
+kind-create: kind ## Create the dev Kind cluster the e2e/integration targets expect.
+	$(KIND) create cluster --name "$(KIND_CLUSTER)" --wait 5m
+
+.PHONY: kind-delete
+kind-delete: kind ## Delete the dev Kind cluster.
+	$(KIND) delete cluster --name "$(KIND_CLUSTER)"
+
+.PHONY: envtest
+envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
+$(ENVTEST): $(LOCALBIN)
+	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(SETUP_ENVTEST_VERSION))
 
 # Version of the envtest control-plane binaries (etcd/kube-apiserver) to use
-# for the envtest suite under test/envtest. Keep in sync with
-# .github/workflows/ci.yaml's envtest job.
+# for the envtest suite under test/envtest. This is the single source of truth;
+# CI runs `make test-envtest` without overrides.
 ENVTEST_K8S_VERSION ?= 1.31.0
 
 .PHONY: all
 all: build
 
 ##@ General
+
+.PHONY: print-kind-version
+print-kind-version: ## Print the pinned kind version (for CI).
+	@echo $(KIND_VERSION)
+
+.PHONY: print-cert-manager-version
+print-cert-manager-version: ## Print the pinned cert-manager chart version (for CI).
+	@echo $(CERT_MANAGER_VERSION)
 
 .PHONY: help
 help: ## Display this help.
@@ -43,7 +119,7 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: ## Generate the manager ClusterRole and CRDs.
+manifests: controller-gen ## Generate the manager ClusterRole and CRDs.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	# Sync the embedded operand manifests with the generated CRD bases; the
 	# operands sync test fails when this step is skipped.
@@ -53,12 +129,12 @@ manifests: ## Generate the manager ClusterRole and CRDs.
 		internal/controller/databaseservice/operands/manifests/
 
 .PHONY: generate
-generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt",year=$(YEAR) paths="./..."
 
 .PHONY: fmt
-fmt: ## Run golangci-lint formatters against code.
-	$(GOLANGCI_LINT) fmt
+fmt: golangci-lint ## Run golangci-lint formatters against code.
+	GOTOOLCHAIN=go$(GO_VERSION) $(GOLANGCI_LINT) fmt
 
 .PHONY: vet
 vet: ## Run go vet against code.
@@ -70,15 +146,18 @@ deps: ## Tidy and verify Go module dependencies.
 	go mod verify
 
 .PHONY: lint
-lint: ## Run golangci-lint linter.
-	$(GOLANGCI_LINT) run
+lint: golangci-lint ## Run golangci-lint linter.
+	# GOTOOLCHAIN pins the go command golangci-lint shells out to, to the go.mod
+	# version: a newer local go feeds it dependency files built for go1.27+ that
+	# its embedded typechecker (built with go.mod's version) cannot load.
+	GOTOOLCHAIN=go$(GO_VERSION) $(GOLANGCI_LINT) run
 
 .PHONY: lint-fix
-lint-fix: ## Run golangci-lint linter and perform fixes.
-	$(GOLANGCI_LINT) run --fix
+lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
+	GOTOOLCHAIN=go$(GO_VERSION) $(GOLANGCI_LINT) run --fix
 
 .PHONY: lint-config
-lint-config: ## Verify golangci-lint linter configuration.
+lint-config: golangci-lint ## Verify golangci-lint linter configuration.
 	$(GOLANGCI_LINT) config verify
 
 UNIT_TEST_PACKAGES ?= ./api/... ./assets/... ./cmd/... ./internal/... ./pkg/... ./test/support/...
@@ -91,12 +170,12 @@ test-unit: ## Run unit tests in the selected packages without a cluster.
 	go test $(UNIT_TEST_PACKAGES) -coverprofile cover.out
 
 .PHONY: test-envtest
-test-envtest: manifests ## Run the envtest-based reconciler suite (no external cluster required).
+test-envtest: manifests envtest ## Run the envtest-based reconciler suite (no external cluster required).
 	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
 		go test ./test/envtest/... -v -timeout 5m -failfast
 
 .PHONY: test-integration-setup
-test-integration-setup: manifests ## Prepare the cluster for integration tests.
+test-integration-setup: manifests kustomize ## Prepare the cluster for integration tests.
 	@context="$$($(KUBECTL) config current-context)"; \
 	if [ "$$context" != "$(TEST_INTEGRATION_CONTEXT)" ]; then \
 		echo "integration setup requires kube context $(TEST_INTEGRATION_CONTEXT) (current: $$context)" >&2; \
@@ -115,7 +194,7 @@ test-integration-run: ## Run integration tests against the current kubeconfig co
 test-integration: test-integration-setup test-integration-run ## Set up and run integration tests.
 
 .PHONY: test-e2e-setup
-test-e2e-setup: test-e2e-context-check ## Install cert-manager when needed, build/load the manager image, and install the Helm chart into Kind.
+test-e2e-setup: test-e2e-context-check helm-tool ## Install cert-manager when needed, build/load the manager image, and install the Helm chart into Kind.
 	@if [ "$(E2E_CERT_MANAGER_PROFILE)" != absent ]; then $(MAKE) test-e2e-cert-manager; fi
 	$(KUBECTL) get --raw=/readyz >/dev/null
 	$(MAKE) test-e2e-teardown
@@ -189,7 +268,7 @@ test-e2e-run: test-e2e-context-check ## Verify the Helm-deployed manager reconci
 		go test ./test/e2e/... -v -timeout 20m
 
 .PHONY: test-e2e-teardown
-test-e2e-teardown: test-e2e-context-check ## Remove the e2e DatabaseService, Helm release, and namespace.
+test-e2e-teardown: test-e2e-context-check helm-tool ## Remove the e2e DatabaseService, Helm release, and namespace.
 	@cleanup_status=0; \
 	if $(KUBECTL) get crd databaseservices.services.platform.opendatahub.io >/dev/null 2>&1; then \
 		$(KUBECTL) delete databaseservice default-db-operator --ignore-not-found --wait || cleanup_status=$$?; \
@@ -219,7 +298,7 @@ test-e2e-cert-manager: test-e2e-context-check ## Install cert-manager into the K
 			"https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml"; then \
 			exit 1; \
 		fi; \
-		if ! printf '%s  %s\n' "$(CERT_MANAGER_SHA256)" "$$manifest" | sha256sum --check --status; then \
+		if ! printf '%s  %s\n' "$(CERT_MANAGER_SHA256)" "$$manifest" | shasum -a 256 --check --status; then \
 			echo "cert-manager manifest digest mismatch for $(CERT_MANAGER_VERSION)" >&2; \
 			exit 1; \
 		fi; \
@@ -315,7 +394,7 @@ E2E_CONSUMER_IMAGE ?= postgres:16
 E2E_INTERNAL_POSTGRES_IMAGE ?= quay.io/sclorg/postgresql-16-c9s@sha256:66566a27e08ec28d739c5fc54dcd47a4f0b505682d469589e9d493ae0b7bc9ab
 
 .PHONY: container-load-kind
-container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image` doesn't work with the podman provider.
+container-load-kind: kind ## Load $(IMG) into a Kind cluster. `kind load docker-image` doesn't work with the podman provider.
 	tmp="$$(mktemp)"; trap 'rm -f "$$tmp" "$$tmp.tar"' EXIT; \
 	$(CONTAINER_TOOL) save "$(IMG)" -o "$$tmp.tar"; \
 	$(KIND) load image-archive "$$tmp.tar" --name "$(KIND_CLUSTER)"
@@ -323,7 +402,7 @@ container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image
 ##@ Helm
 
 .PHONY: helm
-helm: manifests generate ## Generate and lint the Helm chart from kustomize output via chartgen.
+helm: manifests generate kustomize helm-tool ## Generate and lint the Helm chart from kustomize output via chartgen.
 	# Chartgen stages output before replacing chart artifacts; do not delete config/chart before running it.
 	# Merge OpenShift install-time SCC/ClusterRole (no namePrefix) after config/default.
 	{ $(KUSTOMIZE) build config/default; echo '---'; $(KUSTOMIZE) build config/openshift; } | \
@@ -337,22 +416,22 @@ ifndef ignore-not-found
 endif
 
 .PHONY: install
-install: manifests ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	@out="$$( $(KUSTOMIZE) build config/crd 2>/dev/null || true )"; \
 	if [ -n "$$out" ]; then echo "$$out" | $(KUBECTL) apply -f -; else echo "No CRDs to install; skipping."; fi
 
 .PHONY: uninstall
-uninstall: manifests ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
+uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
 	@out="$$( $(KUSTOMIZE) build config/crd 2>/dev/null || true )"; \
 	if [ -n "$$out" ]; then echo "$$out" | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
 
 .PHONY: deploy
-deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/config, via kustomize.
+deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config, via kustomize.
 	cd config/manager && $(KUSTOMIZE) edit set image controller="$(IMG)"
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
-undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
+undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
 	# config/default's bundle includes the operator's Namespace (kubebuilder's
 	# default scaffold shape). Piping the whole bundle straight to `kubectl
 	# delete -f -` would delete that Namespace object -- and, cascading from
