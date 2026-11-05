@@ -25,8 +25,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  HELM_VERSION: v3.19.0
-  CERT_MANAGER_VERSION: v1.20.4
   CALICO_VERSION: v3.29.5
 
 jobs:
@@ -45,20 +43,23 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: ${{ env.HELM_VERSION }}
+      - name: Install pinned tools from Makefile
+        run: |
+          echo "CERT_MANAGER_VERSION=$(make print-cert-manager-version)" >> "$GITHUB_ENV"
+          echo "KIND_VERSION=$(make print-kind-version)" >> "$GITHUB_ENV"
 
       - name: Create Kind cluster
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: db-operator-e2e-${{ matrix.cert-manager-profile }}
+          version: ${{ env.KIND_VERSION }}
           wait: 5m
 
       - name: Install cert-manager
         if: matrix.cert-manager-profile == 'present'
         run: |
-          helm install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+          make helm-tool
+          ./bin/helm install cert-manager oci://quay.io/jetstack/charts/cert-manager \
             --version "$CERT_MANAGER_VERSION" --namespace cert-manager --create-namespace \
             --set crds.enabled=true --wait --timeout 5m
 
@@ -85,14 +86,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: ${{ env.HELM_VERSION }}
+      - name: Install pinned tools from Makefile
+        run: |
+          make helm-tool
+          echo "CERT_MANAGER_VERSION=$(make print-cert-manager-version)" >> "$GITHUB_ENV"
+          echo "KIND_VERSION=$(make print-kind-version)" >> "$GITHUB_ENV"
 
       - name: Create Kind cluster with Calico
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: db-operator-e2e-baseline
+          version: ${{ env.KIND_VERSION }}
           config: test/e2e/scripts/kind-calico-config.yaml
           wait: 5m
 
@@ -110,7 +114,9 @@ jobs:
 
       - name: Install cert-manager
         run: |
-          helm install cert-manager oci://quay.io/jetstack/charts/cert-manager             --version "$CERT_MANAGER_VERSION" --namespace cert-manager --create-namespace             --set crds.enabled=true --wait --timeout 5m
+          ./bin/helm install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+            --version "$CERT_MANAGER_VERSION" --namespace cert-manager --create-namespace \
+            --set crds.enabled=true --wait --timeout 5m
 
       - name: Run default-deny baseline scenario
         run: |
