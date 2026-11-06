@@ -4,8 +4,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: quay.io/opendatahub/opendatahub-db-operator
-  newTag: latest
+  newName: quay.io/opendatahub/odh-db-operator
+  newTag: odh-stable
 # Generated (not a static configmap.yaml) so kustomize appends a
 # content hash to the name and rewrites manager.yaml's volume reference to
 # match. That name change is what forces a new pod template -- and so a

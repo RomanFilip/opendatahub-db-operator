@@ -100,6 +100,11 @@ Apply the provider manifest with `oc apply -f databaseprovider.yaml`.
 Internal providers are single-instance PostgreSQL services. On OpenShift, the Helm chart
 installs a shared SecurityContextConstraints and use ClusterRole limited to UID/GID 26;
 the operator creates a dedicated ServiceAccount per provider and binds it to that SCC.
+When the ODH platform operator deploys this module, it passes
+`RELATED_IMAGE_POSTGRESQL_16_IMAGE` to the module Deployment when the release supplies it;
+Internal providers then use that mirrored image unless `postgres-image` is configured explicitly.
+For a standalone disconnected installation, set `operator.image.ref` and
+`config.postgres-image` to digest-pinned images available in the cluster's mirror registry.
 The SCC template is included when the cluster advertises `security.openshift.io/v1`
 (standalone `helm install`/`upgrade`) or when
 `openshift.securityContextConstraints=true` (required for the ODH operator's offline
