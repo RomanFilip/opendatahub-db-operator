@@ -59,7 +59,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault(KeyDatabaseClaimRetryInterval, DefaultRetryInterval)
 	v.SetDefault(KeySchemaClaimRetryInterval, DefaultRetryInterval)
 	v.SetDefault(KeyGracePeriod, DefaultGracePeriod)
-	v.SetDefault("postgres-image", DefaultInternalPostgresImage)
+	// Keep administrator ConfigMap and ODH_MODULE_OPERATOR_ overrides above the release image.
+	v.SetDefault("postgres-image", defaultPostgresImage())
+}
+
+func defaultPostgresImage() string {
+	if image := strings.TrimSpace(os.Getenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE")); image != "" {
+		return image
+	}
+	return DefaultInternalPostgresImage
 }
 
 // BindEnv configures Viper to read environment variables for the given

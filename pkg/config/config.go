@@ -319,7 +319,7 @@ func Load(opts ...Option) (*Config, error) {
 	// An empty ConfigMap/env value still sets the key and overrides Viper's
 	// SetDefault; treat blank as unset so Internal always gets a usable image.
 	if cfg.PostgresImage == "" {
-		cfg.PostgresImage = DefaultInternalPostgresImage
+		cfg.PostgresImage = defaultPostgresImage()
 	}
 	if cfg.DefaultProviderName == "" {
 		cfg.DefaultProviderName = DefaultProviderName

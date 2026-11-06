@@ -2,7 +2,7 @@
 -include local.mk
 
 # Image URL to use for all building/pushing image targets.
-IMG ?= quay.io/opendatahub/opendatahub-db-operator:latest
+IMG ?= quay.io/opendatahub/odh-db-operator:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 # Keep generated file headers stable across calendar years.
 YEAR ?= 2026

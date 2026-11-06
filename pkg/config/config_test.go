@@ -29,6 +29,7 @@ import (
 )
 
 func TestLoad_Defaults(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "")
 	g := NewWithT(t)
 
 	cfg, err := config.Load()
@@ -64,6 +65,56 @@ func TestLoad_PostgresImage(t *testing.T) {
 	g.Expect(cfg.PostgresImage).To(Equal("registry.example.test/rhel9/postgresql-16"))
 }
 
+func TestLoad_RelatedPostgresImage(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "mirror.example.test/postgresql-16@sha256:abc123")
+	g := NewWithT(t)
+
+	cfg, err := config.Load()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.PostgresImage).To(Equal("mirror.example.test/postgresql-16@sha256:abc123"))
+}
+
+func TestLoad_WhitespaceRelatedPostgresImageUsesDefault(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", " \t\n ")
+	g := NewWithT(t)
+
+	cfg, err := config.Load()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.PostgresImage).To(Equal(config.DefaultInternalPostgresImage))
+}
+
+func TestLoad_ConfiguredPostgresImageOverridesRelatedImage(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "mirror.example.test/postgresql-16@sha256:abc123")
+	g := NewWithT(t)
+
+	cfg, err := config.Load(config.WithFS(fstest.MapFS{
+		"postgres-image": {Data: []byte("custom.example.test/postgresql-16@sha256:def456")},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.PostgresImage).To(Equal("custom.example.test/postgresql-16@sha256:def456"))
+}
+
+func TestLoad_EmptyPostgresImageUsesRelatedImage(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "mirror.example.test/postgresql-16@sha256:abc123")
+	g := NewWithT(t)
+
+	cfg, err := config.Load(config.WithFS(fstest.MapFS{
+		"postgres-image": {Data: []byte("   ")},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.PostgresImage).To(Equal("mirror.example.test/postgresql-16@sha256:abc123"))
+}
+
+func TestLoad_ExplicitPostgresImageOverridesRelatedImage(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "mirror.example.test/postgresql-16@sha256:abc123")
+	t.Setenv("ODH_MODULE_OPERATOR_POSTGRES_IMAGE", "custom.example.test/postgresql-16@sha256:def456")
+	g := NewWithT(t)
+
+	cfg, err := config.Load()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.PostgresImage).To(Equal("custom.example.test/postgresql-16@sha256:def456"))
+}
+
 func TestLoad_WebhookDefaults(t *testing.T) {
 	g := NewWithT(t)
 
@@ -75,6 +126,7 @@ func TestLoad_WebhookDefaults(t *testing.T) {
 }
 
 func TestLoad_EmptyPostgresImageFallsBackToDefault(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "")
 	g := NewWithT(t)
 
 	cfg, err := config.Load(config.WithFS(fstest.MapFS{

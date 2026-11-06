@@ -266,17 +266,18 @@ func TestDatabaseServiceCreatesDefaultProvider(t *testing.T) {
 			return cli.Update(ctx, claim)
 		}).Should(Succeed())
 	}
+	reader := mgr.GetAPIReader()
 	g.Eventually(func(g Gomega) {
-		err := cli.Get(ctx, client.ObjectKey{Name: cfg.DefaultProviderName}, &infraApi.DatabaseProvider{})
+		err := reader.Get(ctx, client.ObjectKey{Name: cfg.DefaultProviderName}, &infraApi.DatabaseProvider{})
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "default provider should be removed after claims")
-		err = cli.Get(ctx, client.ObjectKeyFromObject(instance), &servicesv1alpha1.DatabaseService{})
+		err = reader.Get(ctx, client.ObjectKeyFromObject(instance), &servicesv1alpha1.DatabaseService{})
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "DatabaseService should finish deleting")
 		for _, obj := range []client.Object{&corev1.PersistentVolumeClaim{}, &corev1.Secret{}} {
 			key := client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: cfg.DefaultProviderName}
 			if _, ok := obj.(*corev1.Secret); ok {
 				key.Name += "-admin"
 			}
-			g.Expect(cli.Get(ctx, key, obj)).To(Succeed())
+			g.Expect(reader.Get(ctx, key, obj)).To(Succeed())
 			g.Expect(obj.GetOwnerReferences()).To(BeEmpty())
 		}
 	}).Should(Succeed())
