@@ -1,0 +1,8 @@
+---
+metadata:
+  version: "1.0"
+artifacts:
+  - download_url: https://get.helm.sh/helm-v3.22.1-linux-amd64.tar.gz
+    checksum: sha256:896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+  - download_url: https://get.helm.sh/helm-v3.22.1-linux-arm64.tar.gz
+    checksum: sha256:4c29e286b279d170fa048ddfc3e4e83dcd069ca9c52102766ba672d7149e694d

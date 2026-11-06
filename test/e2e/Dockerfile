@@ -33,16 +33,21 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -o /e2e-run ./test/e2e/cmd/run/
 
-RUN curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-${TARGETOS}-${TARGETARCH}.tar.gz" -o /tmp/helm.tar.gz && \
-    curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-${TARGETOS}-${TARGETARCH}.tar.gz.sha256sum" -o /tmp/helm.tar.gz.sha256sum && \
-    awk '{print $1 "  /tmp/helm.tar.gz"}' /tmp/helm.tar.gz.sha256sum | sha256sum -c && \
+RUN helm_archive="/cachi2/output/deps/generic/helm-v${HELM_VERSION}-${TARGETOS}-${TARGETARCH}.tar.gz" && \
+    if [ -f "${helm_archive}" ]; then \
+        cp "${helm_archive}" /tmp/helm.tar.gz; \
+    else \
+        curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-${TARGETOS}-${TARGETARCH}.tar.gz" -o /tmp/helm.tar.gz && \
+        curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-${TARGETOS}-${TARGETARCH}.tar.gz.sha256sum" -o /tmp/helm.tar.gz.sha256sum && \
+        awk '{print $1 "  /tmp/helm.tar.gz"}' /tmp/helm.tar.gz.sha256sum | sha256sum -c; \
+    fi && \
     tar -xzf /tmp/helm.tar.gz "${TARGETOS}-${TARGETARCH}/helm" && \
     mv "${TARGETOS}-${TARGETARCH}/helm" /helm && \
     rm -rf /tmp/helm.tar.gz /tmp/helm.tar.gz.sha256sum "${TARGETOS}-${TARGETARCH}"
 
 FROM --platform=$TARGETPLATFORM ${BASE_IMAGE}
 ARG USER_ID=65532
-ARG ODH_E2E_OPERATOR_IMAGE=quay.io/rhoai/odh-db-operator-rhel9:latest
+ARG ODH_E2E_OPERATOR_IMAGE=quay.io/rhoai/odh-db-operator-rhel9:rhoai-3.7-ea.1
 ENV ODH_E2E_OPERATOR_IMAGE=${ODH_E2E_OPERATOR_IMAGE}
 WORKDIR /e2e
 
